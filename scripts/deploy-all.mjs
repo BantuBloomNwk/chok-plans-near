@@ -41,9 +41,9 @@ async function keyless(id, code, init, args, funds) {
 }
 
 const hashes = {
-  plan: await keyless(ids.plan, 'plan', 'new', { outlayer: OUTLAYER, launcher: ids.launcher, judges: JUDGES }, 4.8),
-  market: await keyless(ids.market, 'market', 'new', { launcher: ids.launcher }, 3),
-  launcher: await keyless(ids.launcher, 'launcher', 'new', { market: ids.market, plans: ids.plan, outlayer: OUTLAYER }, 5),
+  plan: await keyless(ids.plan, 'plan', 'new', { outlayer: OUTLAYER, launcher: ids.launcher, judges: JUDGES }, 4.6),
+  market: await keyless(ids.market, 'market', 'new', { launcher: ids.launcher }, 2.9),
+  launcher: await keyless(ids.launcher, 'launcher', 'new', { market: ids.market, plans: ids.plan, outlayer: OUTLAYER }, 4.7),
   coin: await keyless(ids.coin, 'token', 'new', { owner: S.dev, total_supply: (1_000_000_000n * 1_000_000n).toString(), name: 'Bus Dog', symbol: 'BUSDOG' }, 2.4),
 };
 

@@ -25,15 +25,15 @@ No wallet needed for steps 1 to 5.
 
 | Account | What it is |
 | --- | --- |
-| `book.chokplans-mvxhykzp.testnet` | The plan contract. **It has never had an access key**, so nobody, us included, can redeploy or change it. |
-| `bourse.chokplans-mvxhykzp.testnet` | The market. **Never had a key.** |
-| `launchpad.chokplans-mvxhykzp.testnet` | The launcher. **Never had a key.** It deploys one embedded token, and every coin is `<ticker>-<n>.launchpad.chokplans-mvxhykzp.testnet`, also with no keys. |
-| `bookagent.chokplans-mvxhykzp.testnet` | The quick-try agent. Its only key can call `request_release` on the plan contract. |
-| `busdog.chokplans-mvxhykzp.testnet` | BUSDOG, the coin the quick-try plans hold. **Never had a key.** |
+| `planbook.chokplans-mvxhykzp.testnet` | The plan contract. **It has never had an access key**, so nobody, us included, can redeploy or change it. |
+| `market2.chokplans-mvxhykzp.testnet` | The market. **Never had a key.** |
+| `launch2.chokplans-mvxhykzp.testnet` | The launcher. **Never had a key.** It deploys one embedded token, and every coin is `<ticker>-<n>.launch2.chokplans-mvxhykzp.testnet`, also with no keys. |
+| `planagent.chokplans-mvxhykzp.testnet` | The quick-try agent. Its only key can call `request_release` on the plan contract. |
+| `busdog2.chokplans-mvxhykzp.testnet` | BUSDOG, the coin the quick-try plans hold. **Never had a key.** |
 
 `npm run verify` checks every claim in that table against the chain, and that the code on each is this repo's build. It also checks that the judge every plan pins is the judge it gets, that every revealed plan matches its commitment, that every coin came from the launcher and is bound to its plan, that the market can pay what it owes, and that the model passes a fresh attestation.
 
-With no NEAR AI key and after `npm run build`, expect 20 passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), 27 passed. Without `npm run build` the code checks skip too, but nothing should fail.
+With no NEAR AI key and after `npm run build`, expect 20 passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), 27 passed. Without `npm run build` the code checks skip, and nothing should fail.
 
 ## How it works
 
@@ -42,7 +42,7 @@ With no NEAR AI key and after `npm run build`, expect 20 passed and 0 failed, wi
 - It **holds the dev's tokens.** Any NEP-141 token can go in.
 - It **lets them out under a public cap per period**, such as 20M a minute. The cap, the period, the penalty and the start time are set when the plan is made, and anyone can read them.
 - It **refuses anything more, on the record.** A request over the cap is still a successful transaction. It moves nothing, records a Busted stamp, and cuts the cap by the plan's penalty, never past a floor set at launch. Asking for too much makes the next request smaller, but a holder gone bad can't freeze the bag for good.
-- It **keeps its own log on chain** (`get_log`): every release, every Busted and every change, paid for from the plan's budget. Nobody's server is involved in reading it.
+- It **keeps its own log on chain** (`get_log`): every release, Busted, judge failure and change of terms, paid for from the plan's budget. Deposits and top-ups are events only, and budgets can't be withdrawn. Nobody's server is involved in reading it.
 - **The beneficiary can replace the holder**, after the same public notice as a loosening. The new holder is under the same cap.
 - **The holder can never loosen it.** Only the beneficiary (the person the tokens go to) can propose a looser cap. It then waits out a public notice that they can cancel at any time. A plan can also be launched to never loosen at all, and the demo's plans are.
 
@@ -55,7 +55,7 @@ A known selling schedule is easy to trade ahead of. A sealed plan adds secret ru
 3. Each request goes to that judge. It answers cleared or refused, names the rule that refused (never its value), and sends back the hash of the rules it used.
 4. The plan releases only if that hash matches the commitment, the judge cleared it, and the public cap still allows it.
 
-The agent never sees the rules, so it has nothing to leak. Guessing costs it: every wrong guess is Busted and shrinks the cap. The public cap is enforced by the contract underneath, so even a broken enclave can't let out more than the public plan allows.
+The agent never sees the rules, so it has nothing to leak. Guessing costs it: every wrong guess is Busted and shrinks the cap, down to the floor. The public cap is enforced by the contract underneath, so even a broken enclave can't let out more than the public plan allows.
 
 ### The agent
 
@@ -75,7 +75,7 @@ The agent thinks with a model on [NEAR AI Cloud](https://docs.near.ai/cloud) (`d
 
 Each coin gets a bonding curve in `contracts/market`: a constant-product curve over the coin's sale supply, with a virtual reserve of 3 NEAR on one side and a quarter of the sale supply on the other.
 
-- Buy with NEAR, and sell back for NEAR, any time.
+- Buy with NEAR from 0.0075 up, and sell back for NEAR any time, unless what you're selling is worth under about 0.003 NEAR.
 - Every trade carries a slippage limit: if the price moves past it before the trade lands, nothing happens.
 - 1% of each trade goes to the coin's creator, which they can claim at any time.
 - Selling out the whole curve raises 12 NEAR. At that point the curve is simply closed to buyers: sellers can still sell back, and nothing moves to a DEX.
@@ -108,7 +108,9 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 - **A holder is compromised.** It can ask for releases, which only ever go to the beneficiary, and each bad ask cuts the cap down to the floor and no further. The beneficiary replaces it after the public notice.
 - **The model is down, or fails attestation.** The agent won't use it. A plain rule parser takes over, and the answer says which one ran.
 - **The model is talked into something.** It can only ask the plan. Everything it asks for is judged like any other request.
-- **A buy's tokens can't be delivered.** The market puts the pool back as it was and refunds the buyer, from that pool only.
+- **A buy's tokens can't be delivered.** The buyer sells them back at the curve as it stands then, with no fee, from that pool only. Usually that's their money back. If others traded in between it may be a little less or the rest stays in the pool, but the pool's curve is never broken, and `a_failed_buy_cannot_drain_a_pool` tests exactly that.
+- **A judge's verdict never comes back.** After about ten minutes anyone can call `clear_awaiting`, and a late verdict is then ignored.
+- **A launch is given terms that make the plan meaningless.** The launcher refuses it before the coin exists: at most a tenth of the dev's share per period, a period and a notice of at least a minute, and a floor of at least a twentieth of the cap. The demo's one-minute periods are for watching it work, and the coin's page says how fast the bag could leave at that cap.
 - **The price moves while a trade is in flight.** Past the 2% limit, the trade fails and the NEAR or tokens stay with the trader.
 - **The playground runs out of demo coins.** It says so. It also refills itself by releasing from idle playground plans, by their own rules.
 
@@ -120,7 +122,8 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 - The judge's code is hosted on our Netlify page. The plan pins its sha256, so a swapped file is refused, but if that page is down, sealed requests fail and nothing moves.
 - Our attestation checks don't yet cover Sigstore provenance for the containers or the gateway's TLS binding, which NEAR's own verifier also does.
 - The playground's limits (a few plans and coins per visitor an hour, and daily totals) slow down abuse. They're not sybil resistance. A real launch would need that, and this doesn't have it.
-- A plan controls only the tokens inside it. Anyone can still buy and sell the coin, and nothing here promises a price.
+- A plan controls only the tokens inside it. A dev can buy the curve from another wallet at launch, and no plan covers that, here or on any launchpad. Anyone can still buy and sell the coin, and nothing here promises a price.
+- A cap is a calendar window, so up to twice the cap can leave across a period boundary.
 
 ## Where it came from
 
@@ -128,18 +131,19 @@ CHOK started on Solana, where the launchpad, its plans, its sealed schedules (on
 
 ## Running it yourself
 
-You need Node 20 and exactly the Rust version in `rust-toolchain.toml`, 1.93.0, which rustup installs for you along with the `wasm32-unknown-unknown` and `wasm32-wasip2` targets. Another compiler builds different bytes, and verify will say the code doesn't match. `.cargo/config.toml` adds the flags, including the `--cfg near` that near-sdk needs.
+You need Node 20 and rustup. `rust-toolchain.toml` pins Rust 1.93.0 and both wasm targets, and rustup installs them for you. `npm run build` deletes any old build, builds from clean and remaps paths, so you get the same bytes as the chain whatever your home directory is, and `git status` stays clean. We checked that by building a fresh copy under a different `HOME`. Another compiler would give different bytes, and verify would say so.
 
 ```bash
 npm install
 npm run build                    # the token, then the contracts that embed it, then the judge
-cargo test -p plan -p market     # the contracts' unit tests
+cargo test -p plan -p market -p launcher     # the contracts' unit tests
 cargo test --manifest-path judge/Cargo.toml
 node --test web/src/terminal/data.test.mjs
 
 npm run verify                   # checks the live deployment, read-only, with no keys
 
-# these need a funded testnet account of your own, in ~/.near-credentials/testnet
+# this needs about 1.2 testnet NEAR in an account of your own, in ~/.near-credentials/testnet
+# (https://near-faucet.io/ gives you some)
 node scripts/attack.mjs --account you.testnet --no-write   # every attack, against a plan of yours
 ```
 
