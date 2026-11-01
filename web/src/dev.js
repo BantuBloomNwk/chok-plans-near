@@ -3,6 +3,7 @@
 // its state back from the chain each time (some wallets leave the page and come back), never
 // from what a wallet returns.
 
+import './polyfill.js';
 import { setupWalletSelector } from '@near-wallet-selector/core';
 import { setupModal } from '@near-wallet-selector/modal-ui';
 import '@near-wallet-selector/modal-ui/styles.css';
