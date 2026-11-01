@@ -7,7 +7,6 @@ import './polyfill.js';
 import { setupWalletSelector } from '@near-wallet-selector/core';
 import { setupModal } from '@near-wallet-selector/modal-ui';
 import '@near-wallet-selector/modal-ui/styles.css';
-import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
 import { setupMeteorWallet } from '@near-wallet-selector/meteor-wallet';
 import { setupHereWallet } from '@near-wallet-selector/here-wallet';
 import { setupIntearWallet } from '@near-wallet-selector/intear-wallet';
@@ -91,7 +90,7 @@ function planRow([id, p], agents) {
       <div class="stat good"><b>${p.releases}</b><span>Released</span></div>
       <div class="stat bad"><b>${p.busted}</b><span>Busted</span></div>
     </div>
-    <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR.</p>
+    <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR.${p.log_skipped ? ` <b>${p.log_skipped} event(s) aren't in its log because the budget ran out.</b>` : ''} <button class="btn ghost d-topup">Top up</button></p>
     ${opensIn ? `<p class="muted small">Nothing can leave for another ${opensIn}s.</p>` : ''}
     ${p.pending_holder ? `<p class="small"><b>New holder pending:</b> <span class="mono">${esc(p.pending_holder.holder)}</span> at ${new Date(Number(p.pending_holder.effective_at) / 1e6).toLocaleTimeString()}.</p>` : ''}
     ${p.pending ? `<p class="small"><b>Loosening pending:</b> cap to ${M(p.pending.cap)} at ${new Date(Number(p.pending.effective_at) / 1e6).toLocaleTimeString()}. Everyone can see it.</p>` : ''}
@@ -111,7 +110,11 @@ async function render() {
   try {
     const s = await state();
     $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span>${c.coin === BUSDOG ? '' : ` <a href="#trade" class="small d-open" data-coin="${esc(c.coin)}">open it in the market</a>`}</div></div>`).join('');
-    $('dev-plans').innerHTML = s.plans.length ? s.plans.sort((a, b) => b[0] - a[0]).map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Make one above.</p>';
+    // anyone can make a plan and then hand it to you as holder, so those wait under their own heading
+    const mine = s.plans.filter(([, p]) => p.beneficiary === me).sort((a, b) => b[0] - a[0]);
+    const naming = s.plans.filter(([, p]) => p.beneficiary !== me).sort((a, b) => b[0] - a[0]);
+    $('dev-plans').innerHTML = (mine.length ? mine.map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Make one above.</p>')
+      + (naming.length ? `<details style="grid-column:1/-1"><summary class="muted">${naming.length} plan(s) someone else made that name you as holder</summary>${naming.map((x) => planRow(x, s.agents)).join('')}</details>` : '');
     // the agents you hired: show their keys straight from the chain
     const rows = await Promise.all(s.agents.map(async ({ agent: a }) => {
       const keys = await keysOf(a);
@@ -146,15 +149,19 @@ const termsFromForm = () => {
 };
 
 // NEP-413: the wallet signs without a transaction, which is how we know the launch we pay for is yours
-async function signLaunch(symbol) {
-  const message = `Launch ${symbol.toUpperCase()} as ${me} | ${Date.now()}`;
+async function signLaunch(name, symbol, terms) {
+  // the message names everything being launched, so what your wallet shows is what happens
+  const bytes = new TextEncoder().encode(JSON.stringify([name, symbol.toUpperCase(), Number(terms.capMillions), Number(terms.penaltyBps), Number(terms.noticeSecs), !!terms.loosen, terms.holder || '']));
+  const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((x) => x.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  const message = `Launch ${symbol.toUpperCase()} ${digest} as ${me} | ${Date.now()}`;
   const nonce = crypto.getRandomValues(new Uint8Array(32));
+  const callbackUrl = undefined;
   const wallet = await selector.wallet();
   let signed;
   try { signed = await wallet.signMessage({ message, recipient: LAUNCHER, nonce: Buffer.from(nonce) }); }
-  catch (e) { throw new Error(`Your wallet wouldn't sign the message (${e.message || e}). You can claim testnet NEAR at https://near-faucet.io/ and launch from your own wallet.`); }
-  if (!signed?.signature) throw new Error('Your wallet did not return a signature. You can claim testnet NEAR at https://near-faucet.io/ and launch from your own wallet.');
-  return { publicKey: signed.publicKey, signature: signed.signature, message, nonce: Buffer.from(nonce).toString('base64'), recipient: LAUNCHER };
+  catch (e) { throw new Error(`Your wallet wouldn't sign the message (${e.message || e}). You can claim testnet NEAR at https://docs.near.org/getting-started/faucet and launch from your own wallet.`); }
+  if (!signed?.signature) throw new Error('Your wallet did not return a signature. You can claim testnet NEAR at https://docs.near.org/getting-started/faucet and launch from your own wallet.');
+  return { publicKey: signed.publicKey, signature: signed.signature, message, nonce: Buffer.from(nonce).toString('base64'), recipient: LAUNCHER, callbackUrl: signed.callbackUrl ?? callbackUrl };
 }
 
 // one call: the coin, 80% on sale, 20% in your plan. Your wallet signs and pays if it can.
@@ -173,9 +180,10 @@ async function launch() {
   } else {
     if (txs.length) await send(txs, 'Hiring your agent');
     status(`Your wallet is short of the ${(Number(cost / 10n ** 21n) / 1000).toFixed(2)} NEAR a launch costs. We'll pay if your wallet signs a message saying this launch is yours: it costs nothing.`);
-    const proof = await signLaunch(symbol);
+    const terms = { capMillions: f.cap, penaltyBps: Math.round(f.penalty * 100), noticeSecs: f.notice, loosen: f.loosen, holder };
+    const proof = await signLaunch(name, symbol, terms);
     status('Signed. Launching, about half a minute…');
-    await post('/near/my-coin', { owner: me, name, symbol, proof, terms: { capMillions: f.cap, penaltyBps: Math.round(f.penalty * 100), noticeSecs: f.notice, loosen: f.loosen, holder } });
+    await post('/near/my-coin', { owner: me, name, symbol, proof, terms });
     status(`$${symbol.toUpperCase()} is live. 80% is on sale and your 20% is in its plan.`);
   }
   await new Promise((r) => setTimeout(r, 2500));
@@ -210,6 +218,7 @@ async function onPlanClick(e) {
   }
   if (e.target.classList.contains('d-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_loosen', { plan_id: id }, 50)] }], 'Cancelling the loosening');
   if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token, ticket: (keep.get(`cpn.agents.${me}`) || []).find((a) => a.agent === p.holder)?.ticket });
+  if (e.target.classList.contains('d-topup')) await send([{ receiverId: PLAN, actions: [fc('fund_judge', { plan_id: id }, 30, NEAR(0.05))] }], 'Topping up the plan');
   if (e.target.classList.contains('d-holder')) {
     const who = (prompt('Which account should hold this plan? It takes over after the public notice, and you can cancel until then.') || '').trim();
     if (who) await send([{ receiverId: PLAN, actions: [fc('propose_holder', { plan_id: id, holder: who }, 50, NEAR(0.002))] }], 'Proposing a new holder');
@@ -219,7 +228,7 @@ async function onPlanClick(e) {
 }
 
 async function main() {
-  selector = await setupWalletSelector({ network: 'testnet', modules: [setupMyNearWallet(), setupMeteorWallet(), setupHereWallet(), setupIntearWallet()] });
+  selector = await setupWalletSelector({ network: 'testnet', modules: [setupMeteorWallet(), setupHereWallet(), setupIntearWallet()] });
   modal = setupModal(selector, { contractId: PLAN });
   const sync = () => { me = selector.store.getState().accounts[0]?.accountId ?? null; render(); window.dispatchEvent(new Event('cpn-wallet')); };
   selector.store.observable.subscribe(sync);

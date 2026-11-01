@@ -56,10 +56,12 @@ export function renderTabs(el, m, state) {
   const tape = m.trades.slice().reverse().slice(0, 200).map((t) => `<tr class="${m.devs.has(t.who) ? 'dev' : ''}"><td>${acct(t.who, m.link, tag(t.who))}</td><td class="${t.buy ? 'up' : 'down'}"><b>${t.buy ? 'Buy' : 'Sell'}</b></td><td>${fmtCompact(t.quote, 4)}</td><td>${fmtCompact(t.tokens)}</td><td>${fmtCompact(t.price * m.supply)}</td><td class="muted">${ago(t.t)}</td></tr>`).join('');
   const holders = holding.map((p) => `<tr class="${m.devs.has(p.who) ? 'dev' : ''}"><td>${acct(p.who, m.link, tag(p.who))}</td><td>${fmtCompact(p.tokens)}</td><td>${p.share.toFixed(2)}%</td><td>${fmtCompact(p.value, 3)}</td><td class="${p.pnl >= 0 ? 'up' : 'down'}">${p.pnl >= 0 ? '+' : ''}${fmtCompact(p.pnl, 3)}</td></tr>`).join('');
   const q = esc(m.quote);
+  const scroll = el.querySelector('.tp-wrap')?.scrollTop ?? 0;
   el.innerHTML = `<div class="tp-tabs" role="tablist"><button data-t="trades" class="${state.tab === 'trades' ? 'on' : ''}">Trades<i>${m.trades.length}</i></button><button data-t="holders" class="${state.tab === 'holders' ? 'on' : ''}">Holders<i>${holding.length}</i></button></div>
     <div class="tp-wrap">${state.tab === 'trades'
       ? `<table class="tp-table"><thead><tr><th>Trader</th><th>Side</th><th>${q}</th><th>${esc(m.symbol)}</th><th>MCap</th><th>Age</th></tr></thead><tbody>${tape || '<tr><td colspan="6" class="muted">No trades yet. Be the first.</td></tr>'}</tbody></table>`
       : `<table class="tp-table"><thead><tr><th>Holder</th><th>Held</th><th>% supply</th><th>Worth (${q})</th><th>Gain or loss (${q})</th></tr></thead><tbody>${holders || '<tr><td colspan="5" class="muted">Nobody holds any from the market yet.</td></tr>'}</tbody></table><p class="tp-note">Worked out from market trades. Tokens someone was sent directly don't show here, and the plan's locked bag isn't a holder.</p>`}</div>`;
-  el.querySelector('.tp-tabs').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { state.tab = b.dataset.t; renderTabs(el, m, state); } };
+  el.querySelector('.tp-tabs').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { state.tab = b.dataset.t; renderTabs(el, m, state); el.querySelector('.tp-wrap').scrollTop = 0; } };
+  el.querySelector('.tp-wrap').scrollTop = scroll;
   stampFaces(el);
 }

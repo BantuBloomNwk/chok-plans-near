@@ -18,7 +18,7 @@ No wallet needed for steps 1 to 5.
 4. **Check the agent.** Open *Verified* above the console for the contract and TEE checks. Open *Under the hood* on any answer for the model's system prompt, every raw tool call, what the chain said back and the signature on every answer.
 5. **Reveal.** Press *Reveal my plan's rules*. The rules come out, the contract hashes them against the commitment from step 1, and records them. Every verdict above now makes sense.
 6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. The Danfo Dog coin's trades are real transactions from test wallets of ours (`scripts/showcase.mjs`), so there's something to look at. Each face on the chart is a trader, the one with the crown is the dev, and stamps along the top show what the plan did, read from the plan's own log on chain. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
-7. **Be the dev.** Connect a wallet, set your plan's terms and launch. One transaction makes the coin, puts 80% on sale and your 20% in the plan, so you never hold it loose. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder.
+7. **Be the dev.** Connect a wallet (we've tested WALLETS_TESTED; MyNearWallet has stopped accepting new app connections), set your plan's terms and launch. One transaction makes the coin, puts 80% on sale and your 20% in the plan, so you never hold it loose. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder.
 8. **Check us.** Run the commands under [Running it yourself](#running-it-yourself). `npm run verify` needs no keys. `node scripts/attack.mjs --account you.testnet` attacks a plan from your own testnet account, and the last run is in [`attack-log.md`](attack-log.md).
 
 ## What's on testnet
@@ -80,6 +80,7 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 - 1% of each trade goes to the coin's creator, which they can claim at any time.
 - Selling out the whole curve raises 12 NEAR. At that point the curve is simply closed to buyers: sellers can still sell back, and nothing moves to a DEX.
 - The last buyer pays only for the tokens that are left, and the rest of their NEAR comes back in the same transaction.
+- Anyone can sandwich a trade on a bonding curve, here as anywhere. The page's 2% limit stops the victim's side of that.
 - A pool only ever pays out NEAR its buyers put in. A dev's sells are paid from that pool too, and they lower what later sellers get, which is why they're marked on the chart and the tape. `npm run verify` checks that any pool that couldn't pay its sellers at curve prices is one a dev sold into, and that the contract as a whole can pay what it owes.
 - Every trade's storage is measured and charged exactly, and what wasn't used goes back to the trader.
 - Every trade is kept on the contract (`get_trades`). The chart and the tape need nobody's server.
@@ -94,7 +95,7 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 
 **Privacy.** Two kinds of secrets stay secret while still giving public answers. The dev's selling rules are judged inside an OutLayer enclave and proven against a commitment. The agent's model runs in a NEAR AI TEE, and the page shows the attestation and signature checks on every answer. The server keeps no prompts and no replies after it answers. The only record it keeps is the plan log: what was asked, what the chain said, and the transaction.
 
-**Memecoins.** The mechanic lives in contracts, not in our backend. Every parameter is set at launch and readable on chain, and none of the contracts that matter has ever had a key that could change it: not the launcher, not any coin, not the plan, not the market. The launcher binds every coin to its plan in the transaction that makes it. The page shows each plan's state and its log of every release and Busted from the chain, the mints are NEP-141 events, and sells from the dev's own account are marked on the chart and the tape. A dev who sends released tokens to a second account first sells unmarked: nothing here can stop that.
+**Memecoins.** The mechanic lives in contracts, not in our backend. Every parameter is set at launch and readable on chain, and none of the contracts that matter has ever had a key that could change it: not the launcher, not any coin, not the plan, not the market. The launcher binds every coin to its plan in the transaction that makes it, and the coin's headline says whether that plan can ever be loosened. The page shows each plan's state and its log of every release and Busted from the chain, the mints are NEP-141 events, and sells from the dev's own account are marked on the chart and the tape. A dev who sends released tokens to a second account first sells unmarked: nothing here can stop that.
 
 **Open.** The rules are in a readable contract. The beneficiary can cancel a pending loosening until its notice runs out. The demo's timers are in minutes and seconds, so you can watch them run out.
 
@@ -108,15 +109,17 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 - **A holder is compromised.** It can ask for releases, which only ever go to the beneficiary, and each bad ask cuts the cap down to the floor and no further. The beneficiary replaces it after the public notice.
 - **The model is down, or fails attestation.** The agent won't use it. A plain rule parser takes over, and the answer says which one ran.
 - **The model is talked into something.** It can only ask the plan. Everything it asks for is judged like any other request.
-- **A buy's tokens can't be delivered.** The buyer sells them back at the curve as it stands then, with no fee, from that pool only. Usually that's their money back. If others traded in between it may be a little less or the rest stays in the pool, but the pool's curve is never broken, and `a_failed_buy_cannot_drain_a_pool` tests exactly that.
+- **A buy's tokens can't be delivered.** The buyer sells them back at the curve as it stands then, with no fee, from that pool only. Usually that's their money back. If others traded in between it may be much less, or the rest stays in the pool, but the pool's curve is never broken, and `a_failed_buy_cannot_drain_a_pool` tests exactly that.
 - **A judge's verdict never comes back.** After about ten minutes anyone can call `clear_awaiting`, and a late verdict is then ignored.
 - **A launch is given terms that make the plan meaningless.** The launcher refuses it before the coin exists: at most a tenth of the dev's share per period, a period and a notice of at least a minute, and a floor of at least a twentieth of the cap. The demo's one-minute periods are for watching it work, and the coin's page says how fast the bag could leave at that cap.
+- **A dev launched allowing loosening.** Those limits then last only until the notice runs out: after a minute's notice such a dev can raise the cap as far as they like and take the whole bag. That's their choice at launch, the coin's headline says "Can loosen after 1 min" instead of "Never loosens", and a pending change shows there with a countdown. A real launch would require a notice of days.
 - **The price moves while a trade is in flight.** Past the 2% limit, the trade fails and the NEAR or tokens stay with the trader.
 - **The playground runs out of demo coins.** It says so. It also refills itself by releasing from idle playground plans, by their own rules.
 
 ## What it isn't, yet
 
 - It's on testnet only, and it hasn't been audited.
+- The playground's accounts are topped up from NEAR's testnet helper, and its daily limits (coins, sponsored launches, plans, orders per plan) are set to what that can carry. It says so when a limit is reached.
 - **The playground server holds keys** for the demo's dev account, the quick-try agent and the seed its sealed rules come from, all in one process, so visitors can try a plan without a wallet. It also knows every playground plan's sealed rules, which is why revealing is a button.
 - **In "Be the dev", your wallet signs your launch and your plan, unless it's short of NEAR and we pay. If you hire an agent, our server makes and keeps its key so it can act for you.** That key can only call `request_release` on the plan contract, and only you get the ticket to give it orders. The server keeps that ticket's hash.
 - The judge's code is hosted on our Netlify page. The plan pins its sha256, so a swapped file is refused, but if that page is down, sealed requests fail and nothing moves.
@@ -141,9 +144,11 @@ cargo test --manifest-path judge/Cargo.toml
 node --test web/src/terminal/data.test.mjs
 
 npm run verify                   # checks the live deployment, read-only, with no keys
+cd web && npm install && npx vite build && cd ..   # the page, if you want to run it yourself
 
 # this needs about 1.2 testnet NEAR in an account of your own, in ~/.near-credentials/testnet
-# (https://near-faucet.io/ gives you some)
+# Meteor (https://wallet.meteorwallet.app) can make a testnet account, and export its key.
+# NEAR's faucet: https://docs.near.org/getting-started/faucet
 node scripts/attack.mjs --account you.testnet --no-write   # every attack, against a plan of yours
 ```
 
@@ -154,7 +159,7 @@ node scripts/attack.mjs --account you.testnet --no-write   # every attack, again
 - **Contracts:** near-sdk 5.29.1 and near-contract-standards (NEP-141), in Rust.
 - **The judge:** a WASI program, run by OutLayer.
 - **Scripts and the playground:** near-api-js 5.1.1, FastNEAR's testnet RPC, NEAR AI Cloud, `@phala/dcap-qvl` (Intel quote checks), `ethers` (signature recovery) and NVIDIA's attestation service.
-- **The page:** Vite, NEAR Wallet Selector 10 (MyNearWallet, Meteor, HERE, Intear) and [KLineChart](https://github.com/klinecharts/KLineChart) 10 (Apache-2.0) for the candles and axes. The trader bubbles, stamps and panels in `web/src/terminal` are ours.
+- **The page:** Vite, NEAR Wallet Selector 10 (Meteor, HERE, Intear) and [KLineChart](https://github.com/klinecharts/KLineChart) 10 (Apache-2.0) for the candles and axes. The trader bubbles, stamps and panels in `web/src/terminal` are ours.
 
 The code was written with an AI coding assistant, working to our design. Every decision about what the contracts allow, and every claim in this README, was made and checked by us. `npm run verify` is there so you don't have to take our word for any of it.
 

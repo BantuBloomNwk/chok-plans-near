@@ -96,17 +96,34 @@ async function open(token) {
   await detail();
 }
 
-async function detail() {
+let busy = false, shownSig = null, chainKeys = {}, cached = null;
+// One tick reads the pool and its plan, and goes on only if something changed: the tape keeps its
+// scroll, and a text selection survives. `force` is for the reader changing something themselves.
+async function detail(force = false) {
   if (!picked) return;
   if (picked === 'sample') { showSample(); return; }
-  const p = await view(MARKET, 'get_pool', { token: picked });
-  const [trades, keys] = await Promise.all([
-    view(MARKET, 'get_trades', { token: picked, ...fromEnd(p.trades, 2000) }),
-    fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'view_access_key_list', finality: 'optimistic', account_id: picked } }) }).then((r) => r.json()).then((j) => j.result?.keys?.length ?? null),
-  ]);
-  const m = meta[picked];
+  if (busy) return;
+  busy = true;
+  try { await detailOf(picked, force); } finally { busy = false; }
+}
+async function detailOf(token, force) {
+  const p = await view(MARKET, 'get_pool', { token });
+  const plan = await view(PLANS, 'get_plan', { plan_id: p.plan }).catch(() => null);
+  if (picked !== token) return; // they picked another coin while this was on its way
+  const me = window.cpn?.me ?? '';
+  const sig = JSON.stringify([token, me, p.trades, p.real_near, p.fees_owed, plan]);
+  if (sig === shownSig && cached?.token === token) {
+    term?.setMarket(cached.market); // new empty candles as time passes, nothing else
+    if (force) await panel(p);
+    return;
+  }
+  chainKeys[token] ??= await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'view_access_key_list', finality: 'optimistic', account_id: token } }) }).then((r) => r.json()).then((j) => j.result?.keys?.length ?? null);
+  const trades = await view(MARKET, 'get_trades', { token, ...fromEnd(p.trades, 2000) });
+  if (picked !== token) return;
+  shownSig = sig;
+  const keys = chainKeys[token];
   const planId = p.plan;
-  const plan = await view(PLANS, 'get_plan', { plan_id: planId }).catch(() => null);
+  const m = meta[picked];
   const devs = new Set([p.creator, plan?.beneficiary].filter(Boolean));
   // what the plan did, from its own log on chain, as stamps on the chart
   const log = plan ? await view(PLANS, 'get_log', { plan_id: planId, ...fromEnd(plan.log_len, 300) }).catch(() => []) : [];
@@ -116,8 +133,11 @@ async function detail() {
   const secs = (ns) => Number(ns) / 1e9;
   const every = plan ? `${toks(plan.cap)} every ${fmtSecs(secs(plan.period_ns))}` : '';
   const pending = plan?.pending ? `<span class="pending">Cap rising to ${toks(plan.pending.cap)} in ${untilText(plan.pending.effective_at)}</span>` : '';
+  const noticeText = plan ? fmtSecs(secs(plan.notice_ns)) : '';
+  const loosenTag = plan ? (plan.loosen_allowed ? `<span class="can" title="The dev can raise the cap, after this public notice. Then more can leave.">Can loosen after ${noticeText}</span>` : '<span class="never" title="Nobody can ever raise this cap.">Never loosens</span>') : '';
   const pendingHolder = plan?.pending_holder ? `<span class="pending">New holder in ${untilText(plan.pending_holder.effective_at)}</span>` : '';
-  const planLine = plan ? `<div class="tp-plan"><span>Dev's bag <b>${toks(plan.balance)}</b> locked</span><span><b>${every}</b></span><span class="busted"><b>${plan.busted}</b> Busted</span>${pending}${pendingHolder}<span class="tp-curve"><span>${(p.sold_bps / 100).toFixed(1)}% sold</span><i><u style="width:${p.sold_bps / 100}%"></u></i></span></div>` : '';
+  const planLine = plan ? `<div class="tp-plan"><span>Dev's bag <b>${toks(plan.balance)}</b> locked</span><span><b>${every}</b></span><span class="busted"><b>${plan.busted}</b> Busted</span>${loosenTag}${pending}${pendingHolder}<span class="tp-curve"><span>${(p.sold_bps / 100).toFixed(1)}% sold</span><i><u style="width:${p.sold_bps / 100}%"></u></i></span></div>` : '';
+  cached = null;
   showTerminal({ planLine, token: picked, symbol: m.symbol, name: m.name, trades: toTrades(trades), marks, devs, me: window.cpn?.me ?? null, start: { t: Number(p.listed_at), price: startPrice(p) } });
   $('mk-chain').innerHTML = `<a href="${acctLink(picked)}" target="_blank" rel="noreferrer" class="mono">${esc(short(picked))}</a>
     <span>${keys === 0 ? '✓ the coin has no keys, so nobody can change it' : keys == null ? '' : `⚠ the coin still has ${keys} key(s)`}</span>
@@ -130,7 +150,8 @@ async function detail() {
       <div class="mk-facts"><span><b>${toks(plan.balance)}</b> still locked</span><span><b>${toks(plan.released_total)}</b> let out so far</span><span><b>${plan.busted}</b> Busted</span><span>cap <b>${every}</b></span><span>never below <b>${toks(plan.min_cap)}</b></span><span>notice <b>${fmtSecs(secs(plan.notice_ns))}</b></span><span>holder <span class="mono">${esc(short(plan.holder))}</span></span></div>
       ${plan.pending ? `<p><b>Pending:</b> the cap goes to ${toks(plan.pending.cap)} in ${untilText(plan.pending.effective_at)}, unless the dev cancels.</p>` : ''}
       ${plan.pending_holder ? `<p><b>Pending:</b> <span class="mono">${esc(short(plan.pending_holder.holder))}</span> becomes the holder in ${untilText(plan.pending_holder.effective_at)}, unless the dev cancels.</p>` : ''}
-      <p class="muted">At this cap the whole bag could be out in about ${fmtSecs(drain)}. ${plan.loosen_allowed ? 'The cap can be loosened after the public notice.' : 'Launched to never loosen.'} This coin was minted straight into the market and this plan in one transaction, so the dev never held their share loose. Asking for more than the cap is refused, and sells from the dev's own account are marked. A wallet they buy with separately isn't in any plan, on this or any launchpad.</p>` : '';
+      ${plan.log_skipped ? `<p><b>${plan.log_skipped} event(s) aren't in this plan's log</b> because its budget ran out. They're still NEP-297 events on chain. <button class="btn ghost" id="mk-topup">Top up its budget</button></p>` : ''}
+      <p class="muted">At this cap the whole bag could be out in about ${fmtSecs(drain)}. ${plan.loosen_allowed ? `<b>This dev chose to allow loosening:</b> after ${noticeText} of public notice they can raise the cap as far as they like, and then much more can leave at once.` : 'Launched to never loosen, so nobody can ever raise this cap.'} This coin was minted straight into the market and this plan in one transaction, so the dev never held their share loose. Asking for more than the cap is refused, and sells from the dev's own account are marked. A wallet they buy with separately isn't in any plan, on this or any launchpad.</p>` : '';
   if (p.creator === window.cpn?.me && BigInt(p.fees_owed) > 0n) $('mk-bag').innerHTML += `<button class="btn ghost" id="mk-claim">Claim ${near(p.fees_owed)} NEAR in fees</button>`;
   await panel(p);
 }
@@ -153,6 +174,7 @@ function showSample() {
 const panels = { window: '24h', tab: 'trades' };
 
 function showTerminal(m) {
+  if (!m.sample) cached = { token: m.token, market: m };
   if (termFor !== m.token) {
     term?.destroy();
     term = createTerminal($('mk-chart'), { symbol: m.symbol, quote: 'NEAR', supply: SUPPLY, venue: 'CHOK', link: (a) => (m.sample ? null : acctLink(a)) });
@@ -172,7 +194,7 @@ async function panel(p) {
   $('mk-side-sell').classList.toggle('on', side === 'sell');
   $('mk-unit').textContent = side === 'buy' ? 'NEAR' : `$${meta[picked].symbol}`;
   $('mk-presets').innerHTML = (side === 'buy' ? ['0.1', '0.5', '1', '2'] : ['25%', '50%', '100%']).map((v) => `<button class="chip" data-v="${v}">${v}${side === 'buy' ? ' NEAR' : ''}</button>`).join('');
-  if (!me) { $('mk-go').textContent = 'Connect a wallet to trade'; $('mk-bal').textContent = 'Any NEAR testnet wallet works.'; return; }
+  if (!me) { $('mk-go').textContent = 'Connect a wallet to trade'; $('mk-bal').innerHTML = 'Works with <a href="https://wallet.meteorwallet.app" target="_blank" rel="noreferrer">Meteor</a> on testnet.'; return; }
   const [nb, tb] = await Promise.all([nearBalance(me), view(picked, 'ft_balance_of', { account_id: me }).catch(() => '0')]);
   $('mk-bal').innerHTML = `You have <b>${near(nb)}</b> NEAR and <b>${toks(tb)}</b> $${esc(meta[picked].symbol)}`;
   $('mk-bal').dataset.tokens = tb;
@@ -213,13 +235,22 @@ async function trade() {
   if (side === 'buy') await w.send([{ receiverId: MARKET, actions: [w.fc('buy', { token: picked, min_out: min }, 250, amt)] }], `Buying $${sym}`, say);
   else await w.send([{ receiverId: picked, actions: [w.fc('ft_transfer_call', { receiver_id: MARKET, amount: amt.toString(), msg: JSON.stringify({ sell: { min_out: min } }) }, 150, 1n)] }], `Selling $${sym}`, say);
   $('mk-amt').value = '';
+  shownSig = null;
   await refresh();
 }
 
+let tick = 0;
 async function refresh() {
   if (!MARKET) return;
-  const pools = await allPools().catch(() => null);
-  if (pools) { for (const p of pools) if (!meta[p.token]) meta[p.token] = await view(p.token, 'ft_metadata', {}).catch(() => ({ name: p.token, symbol: '?' })); coins = pools.sort((a, b) => b.listed_at - a.listed_at); list(); }
+  // the coin list changes slowly, so it's read one tick in six
+  if (tick++ % 6 === 0) {
+    const pools = await allPools().catch(() => null);
+    if (pools) {
+      for (const p of pools) if (!meta[p.token]) meta[p.token] = await view(p.token, 'ft_metadata', {}).catch(() => ({ name: p.token, symbol: '?' }));
+      const next = pools.sort((a, b) => b.listed_at - a.listed_at);
+      if (JSON.stringify(next) !== JSON.stringify(coins)) { coins = next; list(); }
+    }
+  }
   await detail().catch(() => {});
 }
 
@@ -227,8 +258,8 @@ $('mk-list').onclick = (e) => {
   const b = e.target.closest('.mk-coin');
   if (b?.dataset.all) { showAll = true; list(); } else if (b) open(b.dataset.coin);
 };
-$('mk-side-buy').onclick = () => { side = 'buy'; $('mk-amt').value = ''; detail(); };
-$('mk-side-sell').onclick = () => { side = 'sell'; $('mk-amt').value = ''; detail(); };
+$('mk-side-buy').onclick = () => { side = 'buy'; $('mk-amt').value = ''; detail(true); };
+$('mk-side-sell').onclick = () => { side = 'sell'; $('mk-amt').value = ''; detail(true); };
 $('mk-amt').oninput = quote;
 $('mk-presets').onclick = (e) => {
   const v = e.target.closest('.chip')?.dataset.v;
@@ -238,11 +269,17 @@ $('mk-presets').onclick = (e) => {
 };
 $('mk-go').onclick = () => trade().catch(() => {});
 $('mk-bag').onclick = async (e) => {
+  if (e.target.id === 'mk-topup') {
+    if (!window.cpn?.me) { window.cpn?.connect(); return; }
+    const id = coins.find((c) => c.token === picked)?.plan;
+    await window.cpn.send([{ receiverId: PLANS, actions: [window.cpn.fc('fund_judge', { plan_id: id }, 30, window.cpn.NEAR(0.05))] }], 'Topping up the plan', say).catch(() => {});
+    return refresh();
+  }
   if (e.target.id !== 'mk-claim') return;
   await window.cpn.send([{ receiverId: MARKET, actions: [window.cpn.fc('claim_fees', { token: picked }, 50)] }], 'Claiming your fees', say).catch(() => {});
   refresh();
 };
-window.addEventListener('cpn-wallet', () => detail().catch(() => {}));
+window.addEventListener('cpn-wallet', () => detail(true).catch(() => {}));
 window.cpnMarketRefresh = refresh;
 window.cpnMarketOpen = (coin) => open(coin).catch(() => {});
 load().catch((e) => { $('mk-list').innerHTML = `<p class="err">${esc(e.message)}</p>`; });

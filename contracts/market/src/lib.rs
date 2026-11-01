@@ -403,6 +403,34 @@ mod tests {
         }
     }
 
+    /// An ordinary sandwich, which anyone can do on a bonding curve, with and without a failed buy
+    /// in it: the failure saves the attacker only P's fees, and the victim ends the same.
+    #[test]
+    fn a_failed_buy_adds_nothing_to_a_sandwich() {
+        for (h, p, v) in [(1, 3, 3), (1, 1, 1), (1, 2, 6)] {
+            let (h_in, p_in, v_in) = (h * NEAR, p * NEAR, v * NEAR);
+            let run = |fails: bool| {
+                let mut m = listed();
+                let (ht, _, _) = buy(&mut m, "h.testnet", h_in);
+                let (pt, pi, pf) = buy(&mut m, "p.testnet", p_in);
+                let (vt, _, _) = buy(&mut m, "victim.testnet", v_in);
+                ctx(COIN, 0);
+                let _ = m.ft_on_transfer(acct("h.testnet"), U128(ht), r#"{"sell":{"min_out":"0"}}"#.into());
+                if fails {
+                    ctx("market.root.testnet", 0);
+                    m.on_bought(acct(COIN), acct("p.testnet"), U128(pt), U128(pi), U128(pf), U128(0), Err(PromiseError::Failed));
+                } else {
+                    ctx(COIN, 0);
+                    let _ = m.ft_on_transfer(acct("p.testnet"), U128(pt), r#"{"sell":{"min_out":"0"}}"#.into());
+                }
+                m.quote_sell(acct(COIN), U128(vt)).0
+            };
+            let (with_failure, ordinary) = (run(true), run(false));
+            let gap = with_failure.abs_diff(ordinary);
+            assert!(gap < NEAR / 100, "{h}/{p}/{v}: the victim can get {with_failure} after a failed buy, {ordinary} after an ordinary sandwich");
+        }
+    }
+
     #[test]
     fn a_failed_buy_with_nothing_in_between_refunds_nearly_everything() {
         let mut m = listed();

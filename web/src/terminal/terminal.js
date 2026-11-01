@@ -154,7 +154,7 @@ export function createTerminal(root, opts) {
     period: null,
     show: keep.get('show', 'mcap'),
     type: keep.get('type', 'candle_solid'),
-    markers: keep.get('markers', 'big'),
+    markers: keep.get('markers', window.innerWidth <= 700 ? 'dev' : 'big'),
     stamps: keep.get('stamps', true),
     axis: keep.get('axis', 'normal'),
     studies: keep.get('studies', ['VOL']),
@@ -208,7 +208,7 @@ export function createTerminal(root, opts) {
         priceMark: {
           show: true,
           high: { show: false }, low: { show: false },
-          last: { show: true, upColor: UP, downColor: DOWN, noChangeColor: '#6b5a50', line: { show: true, style: 'dashed', dashedValue: [2, 3], size: 1 }, text: { show: true, size: 11, family: '"JetBrains Mono", ui-monospace, monospace', color: '#06140c', paddingLeft: 5, paddingRight: 5, paddingTop: 3, paddingBottom: 3, borderRadius: 3 } },
+          last: { show: true, upColor: UP, downColor: DOWN, noChangeColor: '#b9a990', line: { show: true, style: 'dashed', dashedValue: [2, 3], size: 1 }, text: { show: true, size: 11, family: '"JetBrains Mono", ui-monospace, monospace', color: '#06140c', paddingLeft: 5, paddingRight: 5, paddingTop: 3, paddingBottom: 3, borderRadius: 3 } },
         },
         tooltip: { showRule: 'none', title: { show: false }, legend: { template: [] } },
       },
@@ -447,7 +447,7 @@ export function createTerminal(root, opts) {
     el.style.top = `${Math.max(8, Math.min(y + 12, p.height - el.offsetHeight - 8))}px`;
   }
   plot.addEventListener('mousemove', tip);
-  plot.addEventListener('mouseleave', () => { $('.term-tip').hidden = true; legend(); });
+  plot.addEventListener('mouseleave', () => { $('.term-tip').hidden = true; st.hoverBar = null; legend(); });
   plot.addEventListener('click', () => { const href = st.over?.trade && o.link(st.over.trade.who); if (href) window.open(href, '_blank', 'noopener'); });
   plot.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -456,7 +456,8 @@ export function createTerminal(root, opts) {
     if (d?.x == null) return;
     const point = chart.convertFromPixel([{ x: d.x }], { paneId: PANE });
     const at = Array.isArray(point) ? point[0] : point;
-    legend(chart.getDataList()[at?.dataIndex]);
+    st.hoverBar = chart.getDataList()[at?.dataIndex];
+    legend(st.hoverBar);
   });
 
   root.addEventListener('click', (e) => {
@@ -527,13 +528,22 @@ export function createTerminal(root, opts) {
       const next = compute();
       const prev = st.bars;
       st.bars = next;
-      // only the tail moves as trades arrive, so feed it in and leave the view where the reader put it
-      if (st.live && next[0]?.timestamp === prev[0]?.timestamp) {
-        let i = Math.max(0, prev.length - 1);
-        while (i > 0 && prev[i] && prev[i].close !== next[i]?.close) i--;
-        for (; i < next.length; i++) st.live(next[i]);
-      } else { symbol(); chart.resetData(); }
-      legend();
+      // Feed in only what moved, so the view stays where the reader put it. A candle at the very end
+      // can be updated; one further back (a trade seen late, on a tiny timeframe) needs a reload, and
+      // then the view is put back.
+      const before = new Map(prev.map((b) => [b.timestamp, b]));
+      const moved = next.filter((b) => { const o = before.get(b.timestamp); return !o || o.close !== b.close || o.volume !== b.volume; });
+      const lastTs = prev[prev.length - 1]?.timestamp ?? 0;
+      if (st.live && moved.every((b) => b.timestamp >= lastTs)) {
+        for (const b of moved) st.live(b);
+      } else {
+        const list = chart.getDataList(), vis = chart.getVisibleRange();
+        const anchor = list[Math.min(list.length - 1, vis.to)]?.timestamp;
+        symbol();
+        chart.resetData();
+        if (anchor) chart.scrollToTimestamp(anchor);
+      }
+      legend(st.hoverBar);
       nudge();
     },
     destroy() {

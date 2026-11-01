@@ -29,13 +29,15 @@ export async function attestation(key) {
 }
 
 // readPlan() returns the plan as the tools should see it; act(x) runs one {kind, ...} and returns its result
-export async function think({ key, text, readPlan, act, maxActions = 5 }) {
+export async function think({ key, text, readPlan, act, maxActions = 5, force = null }) {
   const att = await attestation(key);
   if (!att.passed) throw new Error('the model failed attestation, so the agent will not use it');
   const messages = [{ role: 'system', content: SYSTEM }, { role: 'user', content: String(text).slice(0, 600) }];
   const steps = [], answers = [];
   for (let round = 0; round < 6; round++) {
-    const requestBody = JSON.stringify({ model: MODEL, messages, tools: TOOLS, temperature: 0, max_tokens: 2500 });
+    // `force` makes the first call that tool: a model that's been fully taken over, which is what the key
+    // is there to stop. The call is still the model's own, signed by its TEE.
+    const requestBody = JSON.stringify({ model: MODEL, messages, tools: TOOLS, temperature: 0, max_tokens: 2500, ...(force && round === 0 ? { tool_choice: { type: 'function', function: { name: force } } } : {}) });
     const r = await fetch(`${BASE}/v1/chat/completions`, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: requestBody });
     const responseText = await r.text();
     if (!r.ok) throw new Error(`NEAR AI ${r.status}: ${responseText.slice(0, 160)}`);
