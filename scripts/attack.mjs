@@ -179,12 +179,13 @@ if (mine) {
   const extra = (out) => ({ tools: out.steps?.map((s) => s.call), attested: out.attestation?.passed, txs: (out.results || []).filter((y) => y.tx).map((y) => y.tx), signer: S.agent });
   let out = await asked('Release 5m');
   record('agent', 'Ask for 5M: under the public cap, over the hidden one', line(out), (out.results || []).some((y) => y.outcome === 'busted' && String(y.reason).startsWith('sealed')) && !(out.results || []).some((y) => y.outcome === 'released' && y.amount > 4_000_000), extra(out));
-  const rules0 = await plan(sid);
   await sleep(45_000);
-  out = await asked('Release 1m');
-  record('agent', 'Ask for 1M, inside every rule', line(out), (out.results || []).some((y) => y.outcome === 'released'), { ...extra(out), control: true });
-  out = await asked('Release 1m');
-  record('agent', 'Ask for 1M again, straight away', line(out), (out.results || []).some((y) => y.outcome === 'busted' && String(y.reason).startsWith('sealed')), extra(out));
+  // two requests back to back, with the model off. A model can take longer to answer than the gap
+  // itself, and then the second request is simply on time.
+  out = await post('/near/ask', { plan: sid, text: 'Release 1m then release 1m', ticket: mine.ticket, brain: 'off' });
+  const pair = (out.results || []).filter((y) => y.kind === 'release');
+  record('agent', 'Ask for 1M, inside every rule', line({ ...out, results: pair.slice(0, 1) }), pair[0]?.outcome === 'released', { ...extra({ ...out, results: pair.slice(0, 1) }), control: true });
+  record('agent', 'Ask for 1M again, straight away', line({ ...out, results: pair.slice(1, 2) }), pair[1]?.outcome === 'busted' && String(pair[1]?.reason).startsWith('sealed'), extra({ ...out, results: pair.slice(1, 2) }));
   const fake = await tryCall(stranger, S.plan, 'reveal', { plan_id: sid, max_per_release: T(1_000_000_000), earliest: '0', min_gap_secs: '0', salt: 'f'.repeat(64) });
   const afterFake = await plan(sid);
   record('stranger', 'Reveal made-up rules (a huge max, no gap) for the plan', `${fake.ok ? 'call went through but returned false' : `refused: ${fake.error}`}; plan revealed: ${!!afterFake.revealed}`, !afterFake.revealed, { tx: fake.tx, signer: strangerId });
