@@ -150,8 +150,10 @@ const md = [
   '|---|---|---|---|---|',
   ...log.map((l) => `| ${l.n} | ${l.who} | ${l.attack} | ${String(l.got).replace(/\|/g, '/')}${l.tx ? ` ([tx](${explorer(l.tx)}))` : ''} | ${l.control ? 'normal use' : l.held ? 'yes' : '**no**'} |`),
   '',
+  ...(log.some((l) => /refused by the contract \(/.test(l.got)) ? [
   'Steps 4 to 7 do reach the chain and fail there. The explorer shows them as a WebAssembly trap rather than the contract\'s own message, because the live contract was built without near-sdk\'s `--cfg near` flag (which is what turns a refusal into readable text). The refusals are real and nothing changes; the table names the guard in `contracts/plan/src/lib.rs` that refused each one, and the unit tests check those same messages. The next deploy carries the flag.',
-  '',
+  ''
+  ] : []),
   'Steps 1 to 3 never reach the chain: NEAR itself rejects them, because the agent\'s only key may call `request_release` on the plan contract and nothing else, with no deposit. There is no transaction to link for them.',
   '',
 ].join('\n');
