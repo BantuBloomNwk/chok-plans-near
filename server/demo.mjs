@@ -90,7 +90,8 @@ async function recycle() {
   const now = BigInt(Date.now()) * 1_000_000n;
   for (const [id, p] of plans) {
     const idle = !db.plans[id] || Date.now() - db.plans[id].made > 3_600_000;
-    if (p.holder !== S.agent || p.awaiting || BigInt(p.balance) === 0n || !idle) continue;
+    // only the playground's own BUSDOG plans: a launched coin's dev bag moves only when someone asks
+    if (p.token !== S.coin || p.holder !== S.agent || p.awaiting || BigInt(p.balance) === 0n || !idle) continue;
     const r = rulesFor(id);
     const room = now - BigInt(p.period_start) >= BigInt(p.period_ns) ? BigInt(p.cap) : BigInt(p.cap) - BigInt(p.released_in_period);
     const amount = ([BigInt(r.max_per_release), room, BigInt(p.balance)].reduce((a, b) => (a < b ? a : b)) / 1_000_000n) * 1_000_000n;

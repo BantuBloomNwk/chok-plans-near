@@ -128,21 +128,23 @@ function chart(trades, p, devs) {
   const startPrice = 3e6 * 1e18 * 1e6 / (Number(p.sale_supply) * 1.25) / 1e24;
   pts.unshift({ t: start, p: startPrice });
   pts.push({ t: Math.max(Date.now(), pts[pts.length - 1].t + 1), p: Number(BigInt(p.price)) / 1e24, now: true });
-  const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+  // spaced by trade, not by clock, so a quiet hour doesn't squash a busy minute
+  pts.forEach((x, i) => { x.i = i; });
+  const t0 = pts[0].t;
   let lo = Math.min(...pts.map((x) => x.p)), hi = Math.max(...pts.map((x) => x.p));
   const span = Math.max(hi - lo, hi * 0.04);
   lo -= span * 0.15; hi = lo + span * 1.3;
-  const X = (t) => pad + ((t - t0) / (t1 - t0 || 1)) * (W - 2 * pad);
+  const X = (i) => pad + (i / (pts.length - 1 || 1)) * (W - 2 * pad);
   const Y = (v) => H - pad - ((v - lo) / (hi - lo)) * (H - 2 * pad);
   // a step line: the price holds until the next trade moves it
-  let d = `M${X(pts[0].t)},${Y(pts[0].p)}`;
-  for (let i = 1; i < pts.length; i++) d += `H${X(pts[i].t)}V${Y(pts[i].p)}`;
+  let d = `M${X(0)},${Y(pts[0].p)}`;
+  for (let i = 1; i < pts.length; i++) d += `H${X(i)}V${Y(pts[i].p)}`;
   const up = pts[pts.length - 1].p >= pts[0].p;
   $('mk-chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Price over time">
     <defs><linearGradient id="mkg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${up ? 'var(--kept)' : 'var(--siren)'}" stop-opacity=".35"/><stop offset="1" stop-color="${up ? 'var(--kept)' : 'var(--siren)'}" stop-opacity="0"/></linearGradient></defs>
-    <path d="${d}V${H}H${X(t0)}Z" fill="url(#mkg)"/><path d="${d}" fill="none" stroke="${up ? 'var(--kept)' : 'var(--siren)'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
-    ${pts.filter((x) => x.dev).map((x) => `<circle cx="${X(x.t)}" cy="${Y(x.p)}" r="6" fill="none" stroke="var(--danfo)" stroke-width="2.5" vector-effect="non-scaling-stroke"><title>the dev ${x.buy ? 'bought' : 'sold'}</title></circle>`).join('')}
-  </svg><div class="mk-axis muted"><span>listed ${ago(t0)} ago</span><span>${pts.some((x) => x.dev) ? '<i class="ring"></i> the dev traded' : ''}</span><span>now</span></div>`;
+    <path d="${d}V${H}H${X(0)}Z" fill="url(#mkg)"/><path d="${d}" fill="none" stroke="${up ? 'var(--kept)' : 'var(--siren)'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+    ${pts.filter((x) => x.dev).map((x) => `<circle cx="${X(x.i)}" cy="${Y(x.p)}" r="6" fill="none" stroke="var(--danfo)" stroke-width="2.5" vector-effect="non-scaling-stroke"><title>the dev ${x.buy ? 'bought' : 'sold'}</title></circle>`).join('')}
+  </svg><div class="mk-axis muted"><span>listed ${ago(t0)} ago · ${trades.length} trades</span><span>${pts.some((x) => x.dev) ? '<i class="ring"></i> the dev traded' : ''}</span><span>now</span></div>`;
 }
 
 let quoteTimer = null;
