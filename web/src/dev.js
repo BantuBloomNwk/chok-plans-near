@@ -175,7 +175,8 @@ function showPlans(html) {
 }
 
 async function render() {
-  $('dev-connect').textContent = me ? `${me} · disconnect` : 'Connect a NEAR testnet wallet';
+  const viewing = me && !selector?.store.getState().accounts[0];
+  $('dev-connect').textContent = viewing ? `Viewing ${me}, read-only. Connect your wallet to act` : me ? `${me} · disconnect` : 'Connect a NEAR testnet wallet';
   $('dev-steps').hidden = !me;
   if (!me) return;
   try {
@@ -349,7 +350,7 @@ async function main() {
   const sync = () => { me = selector.store.getState().accounts[0]?.accountId ?? viewAs; render(); window.dispatchEvent(new Event('cpn-wallet')); };
   selector.store.observable.subscribe(sync);
   sync();
-  $('dev-connect').onclick = async () => { if (me) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
+  $('dev-connect').onclick = async () => { if (me && selector.store.getState().accounts[0]) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
   $('dev-faucet').onclick = async () => { status('Sending you 25M BUSDOG…'); try { await post('/near/faucet', { account: me }); status('25M BUSDOG sent.'); render(); } catch (e) { status(e.message, true); } };
   $('dev-mycoin').onclick = () => launch().catch((e) => status(e.message, true));
   $('dev-make').onclick = () => makePlan().catch((e) => status(e.message, true));
