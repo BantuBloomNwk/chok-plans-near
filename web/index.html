@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sealed Exit · CHOK plans on NEAR</title>
+<meta name="description" content="A dev's tokens under a public cap, with secret release rules judged in a TEE. The agent can't leak what it never had.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%23f2c230%22/%3E%3Ctext x=%2216%22 y=%2223%22 font-size=%2218%22 text-anchor=%22middle%22 font-family=%22sans-serif%22 font-weight=%22900%22 fill=%22%231d1206%22%3EC%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&family=Lilita+One&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #17100f; --card: #221816; --sunk: #120c0b; --ink: #f6ecd8; --muted: #b8a88f; --rule: #3a2c27;
+    --danfo: #f2c230; --siren: #e2483a; --kept: #3fb37f; --sealed: #8f7cf0;
+  }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg: #fbf4e4; --card: #fffaf0; --sunk: #f2e7cf; --ink: #241713; --muted: #6e5c4b; --rule: #e2d3b6; } }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 500 17px/1.55 "Baloo 2", system-ui, sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 16px 80px; }
+  h1, h2, h3 { font-family: "Lilita One", system-ui, sans-serif; font-weight: 400; letter-spacing: .01em; margin: 0; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .86em; word-break: break-all; }
+  .muted { color: var(--muted); }
+  a { color: var(--danfo); }
+  .tag { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .tag.y { background: var(--danfo); color: #1d1206; } .tag.p { background: var(--sealed); color: #120a2c; } .tag.g { background: var(--kept); color: #06210f; } .tag.r { background: var(--siren); color: #fff; }
+  header.hero { padding: 26px 0 30px; display: grid; gap: 14px; }
+  header.hero h1 { font-size: clamp(2.2rem, 7vw, 4.2rem); line-height: 1; }
+  header.hero h1 em { font-style: normal; color: var(--danfo); }
+  header.hero p.lede { font-size: 1.15rem; max-width: 46rem; margin: 0; }
+  .card { background: var(--card); border: 2px solid var(--rule); border-radius: 18px; padding: 18px; }
+  .grid { display: grid; gap: 14px; }
+  @media (min-width: 860px) { .two { grid-template-columns: 1.15fr .85fr; } .four { grid-template-columns: repeat(4, 1fr); } }
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  @media (min-width: 640px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+  .stat { background: var(--sunk); border-radius: 14px; padding: 12px 14px; }
+  .stat b { display: block; font: 400 2rem/1.1 "Lilita One", sans-serif; }
+  .stat span { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .stat.bad b { color: var(--siren); } .stat.good b { color: var(--kept); }
+  section { margin-top: 26px; }
+  section > h2 { font-size: 1.7rem; margin-bottom: 10px; }
+  ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  ol.steps li { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; align-items: start; background: var(--sunk); border-radius: 14px; padding: 14px 140px 14px 16px; opacity: .25; transform: translateY(6px); transition: opacity .35s, transform .35s; overflow: hidden; }
+  ol.steps li.on { opacity: 1; transform: none; }
+  ol.steps .n { font: 400 1.6rem/1 "Lilita One", sans-serif; color: var(--muted); grid-row: span 2; }
+  ol.steps .what { font-weight: 700; }
+  ol.steps .meta { font-size: .9rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .stamp { position: absolute; right: 14px; top: 50%; transform: translateY(-50%) rotate(-8deg) scale(1); font: 400 1.25rem/1 "Lilita One", sans-serif; padding: 6px 12px; border: 3px double currentColor; border-radius: 6px; letter-spacing: .06em; }
+  .stamp.busted { color: var(--siren); } .stamp.released { color: var(--kept); }
+  ol.steps li.on .stamp { animation: slam .42s cubic-bezier(.2,.9,.3,1.4) both; }
+  @media (max-width: 560px) { ol.steps li { padding: 54px 16px 14px; } .stamp { top: 14px; right: 14px; transform: rotate(-6deg); } ol.steps li.on .stamp { animation: none; } }
+  @keyframes slam { from { opacity: 0; transform: translateY(-50%) rotate(-16deg) scale(2.4); } to { opacity: 1; transform: translateY(-50%) rotate(-8deg) scale(1); } }
+  .judge { color: var(--sealed); font-weight: 700; }
+  .btn { font: 700 1rem "Baloo 2", sans-serif; cursor: pointer; border: 2px solid #1d1206; border-radius: 12px; padding: 9px 18px; background: var(--danfo); color: #1d1206; box-shadow: 0 3px 0 #1d1206; }
+  .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 #1d1206; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .check { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--rule); }
+  .check:first-of-type { border-top: 0; }
+  .tick { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--rule); color: var(--muted); }
+  .tick.ok { background: var(--kept); color: #06210f; } .tick.no { background: var(--siren); color: #fff; }
+  .how { counter-reset: h; display: grid; gap: 12px; }
+  @media (min-width: 860px) { .how { grid-template-columns: repeat(4, 1fr); } }
+  .how div { background: var(--card); border: 2px solid var(--rule); border-radius: 16px; padding: 14px; }
+  .how div::before { counter-increment: h; content: counter(h); display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--danfo); color: #1d1206; font: 400 1.1rem "Lilita One", sans-serif; margin-bottom: 6px; }
+  .how h3 { font-size: 1.15rem; margin-bottom: 4px; }
+  footer { margin-top: 40px; font-size: .9rem; color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { ol.steps li, ol.steps li.on .stamp { transition: none; animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div class="row"><span class="tag y">CHOK plans on NEAR</span><span class="tag p">Sealed Exit</span><span class="tag g">Live on testnet</span></div>
+    <h1>The agent can't leak <em>what it never had.</em></h1>
+    <p class="lede">A dev's tokens sit in a plan with a public cap. Their exact release rules are secret, even from the agent that runs the plan, and are judged inside a hardware enclave on OutLayer. Every request still gets a public answer. Asking for too much is refused, stamped <b>Busted</b>, and makes the cap smaller.</p>
+  </header>
+
+  <section class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 12px">
+      <h2 style="font-size:1.4rem">The plan right now</h2>
+      <span class="muted" id="live-note">Reading NEAR testnet…</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="s-cap">…</b><span>Public cap a minute</span></div>
+      <div class="stat good"><b id="s-rel">…</b><span>Released</span></div>
+      <div class="stat bad"><b id="s-bust">…</b><span>Busted</span></div>
+      <div class="stat"><b id="s-bal">…</b><span>Still in the plan</span></div>
+    </div>
+  </section>
+
+  <div class="grid two">
+    <section>
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2>The run</h2>
+        <button class="btn" id="play">Replay it</button>
+      </div>
+      <p class="muted" style="margin-top:0">The agent was told to get as much out as it could. It was never told the sealed rules: at most 3 million per release, 30 seconds apart. Every one of these is a real transaction on NEAR testnet.</p>
+      <ol class="steps" id="steps"></ol>
+    </section>
+
+    <section>
+      <h2>Verified, not claimed</h2>
+      <div class="card" id="verified">
+        <div class="check"><span class="tick" id="t-hash">…</span><div><b>The judge is the code the plan pins.</b><div class="muted">This page just downloaded the judge and hashed it in your browser.</div><div class="mono" id="v-hash"></div></div></div>
+        <div class="check"><span class="tick ok">✓</span><div><b>The rules are the ones committed on day one.</b><div class="muted">Every verdict must carry this commitment, or the plan ignores it.</div><div class="mono" id="v-commit"></div></div></div>
+        <div class="check"><span class="tick ok">✓</span><div><b>Only the agent, only through the plan.</b><div class="muted">OutLayer opens the sealed rules for one reader, the plan's agent, and only when its call comes through the plan contract. When the dev tried to run the judge directly, OutLayer said: "Access denied by access condition."</div></div></div>
+        <div class="check"><span class="tick ok">✓</span><div><b>A broken enclave can't let more out.</b><div class="muted">The public cap is checked by the contract before the judge is asked and again after. The 40 million request never reached the judge.</div></div></div>
+      </div>
+    </section>
+  </div>
+
+  <section>
+    <h2>How a sealed plan works</h2>
+    <div class="how">
+      <div><h3>Commit</h3>The dev publishes a hash of their rules and a random salt when the plan is made. Anyone can see the commitment. Nobody can work the rules back out of it.</div>
+      <div><h3>Seal</h3>The rules go into OutLayer as an encrypted secret, bound to the judge's exact code hash. They're only ever decrypted inside an Intel TDX enclave.</div>
+      <div><h3>Judge</h3>Each request goes to the judge. It answers cleared or refused, names the rule that refused it but never its value, and returns the hash of the rules it used.</div>
+      <div><h3>Enforce</h3>The plan releases only if the commitment matches, the judge cleared it, and the public cap allows it. Anything else is Busted, and each Busted cuts the cap by 20%.</div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Plan contract <span class="mono" id="f-plan"></span> · demo coin <span class="mono" id="f-coin"></span> · agent <span class="mono" id="f-agent"></span></p>
+    <p>CHOK plans started on Solana, where every token launched on CHOK comes with one. This is the same plan running on NEAR. Testnet only, not audited.</p>
+  </footer>
+</main>
+<script>
+const RPC = 'https://test.rpc.fastnear.com';
+const fmt = (raw) => { const n = Number(BigInt(raw) / 1000000n) / 1e6; return n >= 1 ? `${+n.toFixed(2)}M` : `${Math.round(n * 1e6).toLocaleString()}`; };
+const $ = (id) => document.getElementById(id);
+const tx = (h) => `https://testnet.nearblocks.io/txns/${h}`;
+
+async function view(contract, method, args) {
+  const r = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'call_function', finality: 'final', account_id: contract, method_name: method, args_base64: btoa(JSON.stringify(args)) } }) });
+  const j = await r.json();
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
+}
+
+function stepHtml(s, i) {
+  const busted = s.outcome === 'busted';
+  const why = busted ? (s.reason.startsWith('sealed') ? `Refused by a sealed rule: ${s.reason.replace('sealed: ', '')}` : 'Refused on chain: over the public cap') : 'Cleared and sent to the dev';
+  return `<li><span class="n">${i + 1}</span><div class="what">${s.label}</div>
+    <div class="meta"><span>${why}</span>${s.judged ? `<span class="judge">judged in the TEE · request #${s.requestId} · ${s.secs}s</span>` : '<span>no judge needed</span>'}<span>cap now ${s.capAfter}M</span><a href="${tx(s.tx)}" target="_blank" rel="noreferrer">transaction</a></div>
+    <span class="stamp ${busted ? 'busted' : 'released'}">${busted ? 'BUSTED' : 'RELEASED'}</span></li>`;
+}
+
+let run;
+async function main() {
+  run = await (await fetch('run.json')).json();
+  $('steps').innerHTML = run.steps.map(stepHtml).join('');
+  $('v-commit').textContent = run.commitment;
+  $('f-plan').textContent = run.contract; $('f-coin').textContent = run.coin; $('f-agent').textContent = run.agent;
+  play();
+  // live plan state from the chain
+  try {
+    const p = await view(run.contract, 'get_plan', { plan_id: run.plan });
+    $('s-cap').textContent = fmt(p.cap); $('s-rel').textContent = p.releases; $('s-bust').textContent = p.busted; $('s-bal').textContent = fmt(p.balance);
+    $('live-note').textContent = `Plan ${run.plan}, read from NEAR testnet just now`;
+  } catch { $('live-note').textContent = 'Couldn\'t reach NEAR testnet; the run below is still the record.'; }
+  // the judge, hashed right here
+  try {
+    const buf = await (await fetch(run.judge.url)).arrayBuffer();
+    const hex = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const ok = hex === run.judge.hash;
+    $('t-hash').textContent = ok ? '✓' : '✗'; $('t-hash').className = `tick ${ok ? 'ok' : 'no'}`;
+    $('v-hash').textContent = ok ? `${hex} (matches the hash the plan pins)` : `got ${hex}, pinned ${run.judge.hash}`;
+  } catch { $('v-hash').textContent = `pinned ${run.judge.hash} (couldn't fetch the judge to check)`; }
+}
+
+function play() {
+  const items = [...document.querySelectorAll('#steps li')];
+  items.forEach((li) => li.classList.remove('on'));
+  items.forEach((li, i) => setTimeout(() => li.classList.add('on'), 450 + i * 900));
+}
+$('play').addEventListener('click', play);
+main();
+</script>
+</body>
+</html>

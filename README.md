@@ -42,7 +42,8 @@ The agent never has the rules, so there's nothing for it to leak. If it tries to
 | `contracts/plan` | The plan contract (Rust, near-sdk 5.29). Public plans and sealed plans. |
 | `contracts/token` | A plain NEP-141 memecoin for the demo, BUSDOG, built on NEAR's own token standard. |
 | `judge` | The sealed judge, a WASI program that OutLayer runs in its enclave. |
-| `scripts` | Testnet setup, an end-to-end run, and a redeploy helper. |
+| `scripts` | Testnet setup, the end-to-end runs, and a few helpers. |
+| `web` | The demo page. It reads the plan live from testnet, replays the recorded sealed run with a link to every transaction, and hashes the judge in your browser to check it's the code the plan pins. |
 
 ## On testnet now
 

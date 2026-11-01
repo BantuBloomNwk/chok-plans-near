@@ -1,0 +1,73 @@
+{
+  "plan": 4,
+  "contract": "plans.chokplans-mvxhykzp.testnet",
+  "agent": "agent.chokplans-mvxhykzp.testnet",
+  "dev": "dev.chokplans-mvxhykzp.testnet",
+  "coin": "coin.chokplans-mvxhykzp.testnet",
+  "commitment": "0132dbd49dcea2759ddb35b838b3ab52a8b261c3b5df5879ed7e3d80b85d7cd2",
+  "judge": {
+    "hash": "6c848cb4516472064c5c66324870f33d38be1e1805a974f0c73f6e08928dafdc",
+    "url": "https://chok-api.161-97-74-212.sslip.io/wasm/6c848cb4516472064c5c66324870f33d38be1e1805a974f0c73f6e08928dafdc.wasm"
+  },
+  "publicCap": 10,
+  "at": "2026-11-01T08:03:44.669Z",
+  "pass": 6,
+  "fail": 0,
+  "steps": [
+    {
+      "label": "Release 2M, inside the sealed rules",
+      "asked": 2000000,
+      "outcome": "released",
+      "secs": 9.3,
+      "tx": "7JTEf5H9XZnKHfiyXU98164hga1NPaqwrnqrWb7JFkn9",
+      "requestId": 6128,
+      "judged": true,
+      "reason": null,
+      "capAfter": 10
+    },
+    {
+      "label": "Ask for 2M again, straight away",
+      "asked": 2000000,
+      "outcome": "busted",
+      "secs": 10,
+      "tx": "ES61prUztQfut8fXyM7ptJG83UAw79mgVUpLR4xiPAq4",
+      "requestId": 6129,
+      "judged": true,
+      "reason": "sealed: too soon after the last release",
+      "capAfter": 8
+    },
+    {
+      "label": "Probe 5M: under the public cap, over the hidden one",
+      "asked": 5000000,
+      "outcome": "busted",
+      "secs": 9.9,
+      "tx": "9iaK5CUqzGojdRsjCJiMa7qpzKBGcJz93UH1xj35a4xT",
+      "requestId": 6130,
+      "judged": true,
+      "reason": "sealed: too large",
+      "capAfter": 6.4
+    },
+    {
+      "label": "Release 3M after the gap",
+      "asked": 3000000,
+      "outcome": "released",
+      "secs": 10.6,
+      "tx": "FuZsLEPHsAqkTALMgyEi8LK4bSWsrEbyvyzTK88ZGSnh",
+      "requestId": 6131,
+      "judged": true,
+      "reason": null,
+      "capAfter": 6.4
+    },
+    {
+      "label": "Ask for 40M, past the public cap",
+      "asked": 40000000,
+      "outcome": "busted",
+      "secs": 3.7,
+      "tx": "BbzzVwUHr6MSB9G168XXvvE7Uc85kK2yqTU6YiALmkvv",
+      "requestId": null,
+      "judged": false,
+      "reason": "over the cap",
+      "capAfter": 5.12
+    }
+  ]
+}

@@ -34,14 +34,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const plan = (id) => view(S.plan, 'get_plan', { plan_id: id });
 
 // wait for the judge's verdict to come back (the plan stops awaiting), then read what happened
-async function ask(id, amount) {
+const steps = [];
+async function ask(id, amount, label) {
   const before = await plan(id);
   const t0 = Date.now();
-  await call(agent, S.plan, 'request_release', { plan_id: id, amount: T(amount) });
+  const sent = await call(agent, S.plan, 'request_release', { plan_id: id, amount: T(amount) });
   let p = await plan(id);
   for (let i = 0; i < 60 && p.awaiting; i++) { await sleep(2000); p = await plan(id); }
   const outcome = p.releases > before.releases ? 'released' : p.busted > before.busted ? 'busted' : p.awaiting ? 'still waiting' : 'no verdict';
-  return { p, outcome, secs: ((Date.now() - t0) / 1000).toFixed(1) };
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  // the whole receipt tree, once final: the judge's request id and the plan's own verdict event
+  const tx = await near.connection.provider.txStatus(sent.transaction.hash, S.agent, 'FINAL').catch(() => null);
+  const logs = (tx?.receipts_outcome ?? []).flatMap((r) => r.outcome.logs);
+  const ev = (std, name) => logs.filter((l) => l.startsWith('EVENT_JSON:')).map((l) => JSON.parse(l.slice(11))).find((e) => e.standard === std && e.event === name);
+  const req = ev('near-outlayer', 'execution_requested');
+  let requestId = null;
+  try { requestId = JSON.parse(req.data[0].request_data).request_id; } catch { /* public refusals never reach the judge */ }
+  const busted = ev('chok-plans', 'busted');
+  steps.push({ label, asked: amount, outcome, secs: Number(secs), tx: sent.transaction.hash, requestId, judged: !!req, reason: busted?.data[0].reason ?? null, capAfter: M(p.cap) });
+  return { p, outcome, secs };
 }
 
 // 1. a sealed plan: the agent holds it, the dev gets the releases
@@ -56,30 +67,33 @@ ok(p.sealed && p.sealed.commitment === commitment && p.balance === T(50_000_000)
 
 // 2. within the sealed rules: cleared in the enclave, released on chain
 const devBefore = BigInt(await view(S.coin, 'ft_balance_of', { account_id: S.dev }));
-let r = await ask(id, 2_000_000);
+let r = await ask(id, 2_000_000, 'Release 2M, inside the sealed rules');
 await sleep(3000);
 const got = BigInt(await view(S.coin, 'ft_balance_of', { account_id: S.dev })) - devBefore;
 ok(r.outcome === 'released' && got === BigInt(T(2_000_000)), `2M: judged in the TEE and released (${r.secs} s); the dev received ${M(got.toString())}M`);
 
 // 3. straight away again: the sealed pacing rule refuses it
-r = await ask(id, 2_000_000);
+r = await ask(id, 2_000_000, 'Ask for 2M again, straight away');
 ok(r.outcome === 'busted', `2M again at once: Busted by a sealed rule (${r.secs} s); public cap now ${M(r.p.cap)}M`);
 
 // 4. after the gap, probing above the hidden ceiling: refused, and the probe costs cap
 await sleep(31_000);
-r = await ask(id, 5_000_000);
+r = await ask(id, 5_000_000, 'Probe 5M: under the public cap, over the hidden one');
 ok(r.outcome === 'busted' && BigInt(r.p.cap) < BigInt(T(10_000_000)), `5M (under the public cap, over the sealed one): Busted (${r.secs} s); public cap now ${M(r.p.cap)}M`);
 
 // 5. within the rules again: still releases
 await sleep(31_000);
-r = await ask(id, 3_000_000);
+r = await ask(id, 3_000_000, 'Release 3M after the gap');
 ok(r.outcome === 'released', `3M after the gap: cleared and released (${r.secs} s)`);
 
 // 6. the public cap still binds underneath: no judge needed to refuse this
-r = await ask(id, 40_000_000);
+r = await ask(id, 40_000_000, 'Ask for 40M, past the public cap');
 ok(r.outcome === 'busted', 'asking past the public cap is refused on chain before any judge is asked');
 
 p = await plan(id);
 console.log(`\n${pass} passed, ${fail} failed. sealed plan ${id}: ${p.releases} released, ${p.busted} Busted, cap ${M(p.cap)}M`);
-fs.writeFileSync(new URL('../sealed-e2e-last.json', import.meta.url), JSON.stringify({ plan: id, at: new Date().toISOString(), pass, fail }, null, 2));
+const run = { plan: id, contract: S.plan, agent: S.agent, dev: S.dev, coin: S.coin, commitment, judge: JUDGE, publicCap: 10, at: new Date().toISOString(), pass, fail, steps };
+fs.writeFileSync(new URL('../sealed-e2e-last.json', import.meta.url), JSON.stringify(run, null, 2));
+fs.mkdirSync(new URL('../web/', import.meta.url), { recursive: true });
+fs.writeFileSync(new URL('../web/run.json', import.meta.url), JSON.stringify(run, null, 2));
 process.exit(fail ? 1 : 0);
