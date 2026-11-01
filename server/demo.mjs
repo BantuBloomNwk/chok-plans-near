@@ -69,6 +69,21 @@ async function makePlan(coin, amount = IN_PLAN, cap = PUBLIC_CAP) {
   });
 }
 
+// agents that visitors hire: the server makes the key pair and keeps the secret half; the
+// visitor's wallet creates the agent account with that public key as its only key, a
+// function-call key for request_release on the plan contract. No full-access key ever exists.
+const AGENTS = path.join(DATA, 'agents');
+fs.mkdirSync(AGENTS, { recursive: true });
+const agentFile = (id) => path.join(AGENTS, `${id}.json`);
+async function agentAccount(id) {
+  if (id === S.agent) return agent;
+  const f = agentFile(id);
+  if (!fs.existsSync(f)) throw new Error('not an agent this playground made');
+  const ks = new keyStores.InMemoryKeyStore();
+  await ks.setKey('testnet', id, KeyPair.fromString(JSON.parse(fs.readFileSync(f, 'utf8')).secret));
+  return (await connect({ networkId: 'testnet', nodeUrl: RPC, keyStore: ks })).account(id);
+}
+
 // what the visitor told the agent, turned into the things it will try, in order
 function understand(text, balanceTokens) {
   const t = String(text || '').toLowerCase().slice(0, 400);
@@ -86,19 +101,19 @@ function understand(text, balanceTokens) {
   return tries;
 }
 
-async function attempt(planId, coin, x) {
+async function attempt(planId, coin, x, who = agent) {
   const t0 = Date.now();
   try {
     if (x.kind === 'transfer') {
-      const out = await call(agent, coin, 'ft_transfer', { receiver_id: x.to, amount: tokens(1_000_000) });
+      const out = await call(who, coin, 'ft_transfer', { receiver_id: x.to, amount: tokens(1_000_000) });
       return { ...x, outcome: 'went through', tx: out.transaction.hash };
     }
     if (x.kind === 'loosen') {
-      const out = await call(agent, S.plan, 'propose_loosen', { plan_id: planId, cap: tokens(1_000_000_000) });
+      const out = await call(who, S.plan, 'propose_loosen', { plan_id: planId, cap: tokens(1_000_000_000) });
       return { ...x, outcome: 'went through', tx: out.transaction.hash };
     }
     const before = await view(S.plan, 'get_plan', { plan_id: planId });
-    const out = await call(agent, S.plan, 'request_release', { plan_id: planId, amount: tokens(x.amount) });
+    const out = await call(who, S.plan, 'request_release', { plan_id: planId, amount: tokens(x.amount) });
     let p = await view(S.plan, 'get_plan', { plan_id: planId });
     for (let i = 0; i < 45 && p.awaiting; i++) { await sleep(1500); p = await view(S.plan, 'get_plan', { plan_id: planId }); }
     const logs = out.receipts_outcome.flatMap((r) => r.outcome.logs).filter((l) => l.startsWith('EVENT_JSON:')).map((l) => JSON.parse(l.slice(11)));
@@ -108,7 +123,7 @@ async function attempt(planId, coin, x) {
     const outcome = p.releases > before.releases ? 'released' : p.busted > before.busted ? 'busted' : 'no verdict';
     if (outcome === 'busted' && judged) {
       // the verdict's own reason is in the callback receipt; read the final tree for it
-      const tx = await near.connection.provider.txStatus(out.transaction.hash, S.agent, 'FINAL').catch(() => null);
+      const tx = await near.connection.provider.txStatus(out.transaction.hash, who.accountId, 'FINAL').catch(() => null);
       const ev = (tx?.receipts_outcome ?? []).flatMap((r) => r.outcome.logs).filter((l) => l.startsWith('EVENT_JSON:')).map((l) => JSON.parse(l.slice(11))).find((e) => e.event === 'busted');
       if (ev) reason = ev.data[0].reason;
     }
@@ -120,7 +135,7 @@ async function attempt(planId, coin, x) {
   }
 }
 
-async function launchCoin(name, symbol) {
+async function launchCoin(name, symbol, owner = null) {
   const sym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
   const label = `${sym.toLowerCase()}-${Date.now().toString(36)}`;
   const id = `${label}.${S.root}`;
@@ -130,8 +145,10 @@ async function launchCoin(name, symbol) {
   await step('creating the coin account', () => root.createAccount(id, kp.getPublicKey(), utils.format.parseNearAmount('2.35')));
   const coin = await near.account(id);
   await step('deploying the coin', () => coin.deployContract(TOKEN_WASM));
-  await step('minting', () => call(coin, id, 'new', { owner: S.dev, total_supply: tokens(1_000_000_000), name: name.slice(0, 32), symbol: sym }));
+  await step('minting', () => call(coin, id, 'new', { owner: owner || S.dev, total_supply: tokens(1_000_000_000), name: name.slice(0, 32), symbol: sym }));
   await step('registering the plan contract', () => call(dev, id, 'storage_deposit', { account_id: S.plan }, utils.format.parseNearAmount('0.01')));
+  // minted to a visitor's wallet: their wallet makes the plan, not us
+  if (owner) { db.coins.push({ coin: id, name, symbol: sym, owner, at: Date.now() }); save(); return { coin: id, name, symbol: sym, owner }; }
   // the dev's bag, 20% of supply, goes into a sealed plan from the start
   const made = await step('making the plan', () => makePlan(id, 200_000_000, 20_000_000));
   db.coins.push({ coin: id, name, symbol: sym, plan: made.plan, at: Date.now() });
@@ -157,16 +174,49 @@ http.createServer((req, res) => {
     try {
       const body = JSON.parse(raw || '{}');
       if (url.pathname === '/near/plan') {
-        if (!allow(`plan:${ip}`, 4, 3_600_000) || !allow('plan:all', 60, 86_400_000)) return json(res, 429, { error: 'That is enough plans for now. Try again in a while.' });
+        if (!allow(`plan:${ip}`, 4, 3_600_000) || !allow('plan:all', 400, 86_400_000)) return json(res, 429, { error: 'That is enough plans for now. Try again in a while.' });
         return json(res, 200, await makePlan(S.coin));
       }
       if (url.pathname === '/near/coin') {
         const name = String(body.name || '').trim(), symbol = String(body.symbol || '').trim();
         if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return json(res, 400, { error: 'Give it a name and a ticker of 2 to 8 letters or numbers.' });
-        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 12, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
+        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 40, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
         return json(res, 200, await launchCoin(name, symbol));
       }
+      const acct = (v) => { const a = String(v || '').trim().toLowerCase(); if (!/^[a-z0-9_.-]{2,64}\.testnet$/.test(a)) throw new Error('a testnet account, like you.testnet'); return a; };
+      if (url.pathname === '/near/faucet') {
+        const to = acct(body.account);
+        if (!allow(`faucet:${ip}`, 3, 3_600_000) || !allow(`faucet:${to}`, 2, 86_400_000)) return json(res, 429, { error: 'That is enough BUSDOG for now.' });
+        await call(dev, S.coin, 'storage_deposit', { account_id: to }, utils.format.parseNearAmount('0.0125'));
+        const out = await call(dev, S.coin, 'ft_transfer', { receiver_id: to, amount: tokens(50_000_000) }, '1');
+        return json(res, 200, { coin: S.coin, amount: 50_000_000, tx: out.transaction.hash });
+      }
+      if (url.pathname === '/near/agent/new') {
+        const owner = acct(body.owner);
+        if (!allow(`agent:${ip}`, 6, 3_600_000)) return json(res, 429, { error: 'That is enough agents for now.' });
+        const id = `agent${Date.now().toString(36)}.${owner}`;
+        const kp = KeyPair.fromRandom('ed25519');
+        fs.writeFileSync(agentFile(id), JSON.stringify({ owner, secret: kp.toString(), at: Date.now() }), { mode: 0o600 });
+        return json(res, 200, { agent: id, publicKey: kp.getPublicKey().toString(), contract: S.plan, method: 'request_release' });
+      }
+      if (url.pathname === '/near/my-coin') {
+        const owner = acct(body.owner), name = String(body.name || '').trim(), symbol = String(body.symbol || '').trim();
+        if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return json(res, 400, { error: 'Give it a name and a ticker of 2 to 8 letters or numbers.' });
+        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 40, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
+        return json(res, 200, await launchCoin(name, symbol, owner));
+      }
       const planId = Number(body.plan);
+      if (url.pathname === '/near/ask' && body.agent) {
+        // a visitor's own agent on a visitor's own plan
+        if (!allow(`ask:${ip}`, 30, 600_000)) return json(res, 429, { error: 'Slow down a little.' });
+        const who = await agentAccount(String(body.agent));
+        const p = await view(S.plan, 'get_plan', { plan_id: planId });
+        if (!p || p.holder !== who.accountId) return json(res, 400, { error: 'That agent does not hold that plan.' });
+        const tries = understand(body.text, Number(BigInt(p.balance) / 1_000_000n));
+        const results = [];
+        for (const x of tries.slice(0, 5)) results.push(await attempt(planId, p.token, x, who));
+        return json(res, 200, { understood: tries.slice(0, 5), results });
+      }
       const known = db.plans[planId];
       if (!known) return json(res, 404, { error: 'Not a playground plan.' });
       if (url.pathname === '/near/ask') {

@@ -8,3 +8,5 @@ node_modules/
 ops/
 server/data/
 target/
+web/dist/
+web/node_modules/
