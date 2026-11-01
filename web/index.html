@@ -417,7 +417,7 @@ async function ask(text) {
   const bubble = say('<span class="thinking"><i></i><i></i><i></i></span> Trying it on NEAR…', 'agent');
   try {
     const out = await post('/near/ask', { plan: mine.plan, text, agent: mine.agent, ticket: mine.ticket });
-    const lead = out.mode === 'model' && out.reply ? `${esc(out.reply)}<br>` : '';
+    const lead = out.mode === 'model' && out.reply ? `${esc(out.reply.replace(/\s*[\u2014\u2013]\s*/g, ', '))}<br>` : '';
     bubble.innerHTML = lead + (out.results.length ? `I tried ${out.results.length === 1 ? 'that' : `${out.results.length} things`}. Here's what the chain said:` : '') + out.results.map((r) => {
       const d = describe(r);
       return `<div class="try"><div class="what">${d.what}</div><div class="why">${d.why}</div><div class="badges">${d.tee ? `<span class="tee">judged in the TEE · ${r.secs.toFixed(1)}s</span>` : ''}${d.cap ? `<span>cap now ${d.cap}M</span>` : ''}${r.tx ? `<span><a href="${tx(r.tx)}" target="_blank" rel="noreferrer">transaction</a></span>` : ''}</div><span class="stamp ${d.stamp[1]}">${d.stamp[0]}</span></div>`;

@@ -130,6 +130,10 @@ if (logFile) {
   if (run.contract !== S.plan) check(false, 'the attack log is for the live plan contract', run.contract);
   let ok = 0;
   const wrong = [];
+  for (const step of run.log.flatMap((l) => (l.txs || []).map((tx) => ({ ...l, tx, viaAgent: true })))) {
+    const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
+    tx && !tx.receipts_outcome.some((o) => o.outcome.status?.Failure) ? ok++ : wrong.push(`${step.n}`);
+  }
   for (const step of run.log.filter((l) => l.tx)) {
     const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
     if (!tx) { wrong.push(`${step.n}: not found`); continue; }

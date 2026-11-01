@@ -17,7 +17,7 @@ No wallet needed for steps 1 to 5.
 3. **Play by the rules, then break them.** Press *Release 1M, then 1M again*. The first is judged in the enclave and **RELEASED**. The second lands too soon and is **BUSTED**, by a sealed rule whose value you still can't see.
 4. **Check the agent.** Open *Verified* above the console for the contract and TEE checks. Open *Under the hood* on any answer for the model's system prompt, every raw tool call, what the chain said back and the signature on every answer.
 5. **Reveal.** Press *Reveal my plan's rules*. The rules come out, the contract hashes them against the commitment from step 1, and records them. Every verdict above now makes sense.
-6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. Each face on the chart is a trader, the one with the crown is the dev, and stamps along the top show what the plan did, read from the plan's own log on chain. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
+6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. The Danfo Dog coin's trades are real transactions from test wallets of ours (`scripts/showcase.mjs`), so there's something to look at. Each face on the chart is a trader, the one with the crown is the dev, and stamps along the top show what the plan did, read from the plan's own log on chain. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
 7. **Be the dev.** Connect a wallet, set your plan's terms and launch. One transaction makes the coin, puts 80% on sale and your 20% in the plan, so you never hold it loose. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder.
 8. **Check us.** Run the commands under [Running it yourself](#running-it-yourself). `npm run verify` needs no keys. `node scripts/attack.mjs --account you.testnet` attacks a plan from your own testnet account, and the last run is in [`attack-log.md`](attack-log.md).
 
@@ -33,7 +33,7 @@ No wallet needed for steps 1 to 5.
 
 `npm run verify` checks every claim in that table against the chain, and that the code on each is this repo's build. It also checks that the judge every plan pins is the judge it gets, that every revealed plan matches its commitment, that every coin came from the launcher and is bound to its plan, that the market can pay what it owes, and that the model passes a fresh attestation.
 
-With no NEAR AI key and after `npm run build`, expect VERIFY_NO_KEY passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), VERIFY_WITH_KEY passed.
+With no NEAR AI key and after `npm run build`, expect 20 passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), 27 passed. Without `npm run build` the code checks skip too, but nothing should fail.
 
 ## How it works
 
@@ -90,7 +90,7 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 
 ## The four tracks
 
-**Security.** The agent is a policy engine bolted to one key. Its function-call key can call one method on one contract, can't attach a deposit, and can't move NEAR or add keys. A prompt-injected agent can only ask, and the plan answers. `scripts/attack.mjs` runs ATTACK_COUNT attacks from your own testnet account: the agent paying a friend, freezing its own plan, a stranger faking the judge's verdict or draining the contract through a fake OutLayer, a fake launch, the dev loosening a never-loosen plan, made-up rules, and two prompt injections. All ATTACK_COUNT held in our last run, and [`attack-log.md`](attack-log.md) links every transaction.
+**Security.** The agent is a policy engine bolted to one key. Its function-call key can call one method on one contract, can't attach a deposit, and can't move NEAR or add keys. A prompt-injected agent can only ask, and the plan answers. `scripts/attack.mjs` runs 23 attacks from your own testnet account: the agent paying a friend, freezing its own plan, a stranger faking the judge's verdict or draining the contract through a fake OutLayer, a fake launch, the dev loosening a never-loosen plan, made-up rules, and two prompt injections. All 23 held in our last run, and [`attack-log.md`](attack-log.md) links every transaction.
 
 **Privacy.** Two kinds of secrets stay secret while still giving public answers. The dev's selling rules are judged inside an OutLayer enclave and proven against a commitment. The agent's model runs in a NEAR AI TEE, and the page shows the attestation and signature checks on every answer. The server keeps no prompts and no replies after it answers. The only record it keeps is the plan log: what was asked, what the chain said, and the transaction.
 
