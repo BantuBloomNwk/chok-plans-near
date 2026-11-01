@@ -1,11 +1,15 @@
 {
   "root": "chokplans-mvxhykzp.testnet",
-  "plan": "plans.chokplans-mvxhykzp.testnet",
+  "plan": "locked.chokplans-mvxhykzp.testnet",
   "coin": "coin.chokplans-mvxhykzp.testnet",
   "dev": "dev.chokplans-mvxhykzp.testnet",
-  "agent": "agent.chokplans-mvxhykzp.testnet",
+  "agent": "quickagent.chokplans-mvxhykzp.testnet",
   "fan": "fan.chokplans-mvxhykzp.testnet",
   "planDeployed": true,
   "coinDeployed": true,
-  "agentKey": "ed25519:8wEZaYadzNHHMkqZjqiVBHb9uKfrzkzfsRyu7AdxmhZy"
+  "agentKey": "ed25519:F5wSUgYB98rhdY1ifHrws1EVfDjaVemMbtzFJUoNvtYz",
+  "legacyPlan": "plans.chokplans-mvxhykzp.testnet",
+  "legacyAgent": "agent.chokplans-mvxhykzp.testnet",
+  "planCodeHash": "5yhHtBrXwKvFbEFq5LQdPPKitGyBRd3CizVkZybHTyaG",
+  "planLocked": true
 }

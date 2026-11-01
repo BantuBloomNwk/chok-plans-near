@@ -30,7 +30,7 @@ const refusedBy = async (p) => { try { await p; return null; } catch (e) { retur
 await call(dev, S.coin, 'storage_deposit', { account_id: S.plan }, utils.format.parseNearAmount('0.01'));
 
 // 1. the dev makes the plan: the agent holds it, the dev gets the releases
-const made = await call(dev, S.plan, 'create_plan', { token: S.coin, holder: S.agent, beneficiary: S.dev, cap: T(10_000_000), period_secs: '60', start_in_secs: '0', notice_secs: '120', penalty_bps: 2000, sealed: null }, utils.format.parseNearAmount('0.05'));
+const made = await call(dev, S.plan, 'create_plan', { token: S.coin, holder: S.agent, beneficiary: S.dev, cap: T(10_000_000), period_secs: '60', start_in_secs: '0', notice_secs: '120', penalty_bps: 2000, sealed: null, loosen_allowed: true }, utils.format.parseNearAmount('0.05'));
 const id = JSON.parse(Buffer.from(made.status.SuccessValue, 'base64').toString());
 ok(Number.isInteger(id), `plan ${id} made: agent holds it, 10M BUSDOG a minute, 20% penalty per Busted`);
 

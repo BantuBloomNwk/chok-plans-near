@@ -61,6 +61,7 @@ async function makePlan(coin, amount = IN_PLAN, cap = PUBLIC_CAP) {
     await call(dev, S.plan, 'create_plan', {
       token: coin, holder: S.agent, beneficiary: S.dev, cap: tokens(cap), period_secs: '60', start_in_secs: '0', notice_secs: '300', penalty_bps: 2000,
       sealed: { commitment: r.commitment, judge_url: JUDGE.url, judge_hash: JUDGE.hash, outlayer: 'outlayer.testnet', secrets_owner: S.dev, secrets_profile: 'playground' },
+      loosen_allowed: false,
     }, utils.format.parseNearAmount('0.05'));
     await call(dev, coin, 'ft_transfer_call', { receiver_id: S.plan, amount: tokens(amount), msg: String(id) }, '1', '150000000000000');
     db.plans[id] = { coin, made: Date.now(), revealed: false };
@@ -228,9 +229,17 @@ http.createServer((req, res) => {
         return json(res, 200, { understood: tries.slice(0, 5), results });
       }
       if (url.pathname === '/near/reveal') {
-        known.revealed = true; save();
         const { commitment, ...rules } = rulesFor(planId);
-        return json(res, 200, { plan: planId, rules, commitment });
+        // the contract checks the rules against the commitment itself and records them
+        const p = await view(S.plan, 'get_plan', { plan_id: planId });
+        let tx = null;
+        if (!p.revealed) {
+          const out = await call(dev, S.plan, 'reveal', { plan_id: planId, max_per_release: rules.max_per_release, earliest: String(rules.earliest), min_gap_secs: String(rules.min_gap_secs), salt: rules.salt });
+          tx = out.transaction.hash;
+        }
+        known.revealed = true; save();
+        const after = await view(S.plan, 'get_plan', { plan_id: planId });
+        return json(res, 200, { plan: planId, rules, commitment, onChain: !!after.revealed, tx });
       }
       json(res, 404, { error: 'unknown path' });
     } catch (e) { json(res, 500, { error: String(e.message || e).slice(0, 200) }); }

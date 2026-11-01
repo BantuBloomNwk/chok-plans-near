@@ -80,6 +80,22 @@ pub struct Plan {
     pub last_release: U64,
     /// A request out with the sealed judge, if any.
     pub awaiting: Option<U128>,
+    /// Set at launch and never changed: whether the cap can ever be loosened at all.
+    pub loosen_allowed: bool,
+    /// A sealed plan's rules once someone has revealed them and the contract checked them
+    /// against the commitment.
+    pub revealed: Option<Revealed>,
+}
+
+#[near(serializers = [borsh, json])]
+#[derive(Clone)]
+pub struct Revealed {
+    pub max_per_release: U128,
+    pub earliest: U64,
+    pub min_gap_secs: U64,
+    pub salt: String,
+    pub by: AccountId,
+    pub at: U64,
 }
 
 #[derive(PanicOnDefault)]
@@ -151,6 +167,7 @@ impl Plans {
         notice_secs: U64,
         penalty_bps: u16,
         sealed: Option<Sealed>,
+        loosen_allowed: bool,
     ) -> u32 {
         require!(cap.0 > 0, "the cap must be above zero");
         require!(period_secs.0 > 0 && notice_secs.0 > 0, "periods and notice must be longer than zero");
@@ -168,9 +185,9 @@ impl Plans {
             not_before: U64(now + start_in_secs.0 * 1_000_000_000),
             notice_ns: U64(notice_secs.0 * 1_000_000_000),
             penalty_bps, releases: 0, busted: 0, tightenings: 0, loosenings: 0, pending: None,
-            sealed, last_release: U64(0), awaiting: None,
+            sealed, last_release: U64(0), awaiting: None, loosen_allowed, revealed: None,
         };
-        event("plan_created", json!({ "plan": id, "token": plan.token, "holder": plan.holder, "beneficiary": plan.beneficiary, "cap": plan.cap, "period_secs": period_secs, "not_before": plan.not_before, "penalty_bps": penalty_bps, "sealed_commitment": plan.sealed.as_ref().map(|s| s.commitment.clone()), "judge_hash": plan.sealed.as_ref().map(|s| s.judge_hash.clone()) }));
+        event("plan_created", json!({ "loosen_allowed": loosen_allowed, "plan": id, "token": plan.token, "holder": plan.holder, "beneficiary": plan.beneficiary, "cap": plan.cap, "period_secs": period_secs, "not_before": plan.not_before, "penalty_bps": penalty_bps, "sealed_commitment": plan.sealed.as_ref().map(|s| s.commitment.clone()), "judge_hash": plan.sealed.as_ref().map(|s| s.judge_hash.clone()) }));
         self.plans.insert(id, plan);
         self.plans.flush();
         let cost = env::storage_byte_cost().saturating_mul((env::storage_usage() - used_before) as u128);
@@ -295,6 +312,7 @@ impl Plans {
         let caller = env::predecessor_account_id();
         let now = env::block_timestamp();
         let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
+        require!(plan.loosen_allowed, "this plan was launched to never loosen");
         require!(caller == plan.beneficiary, "only the beneficiary can propose a loosening; the holder never can");
         require!(cap.0 > plan.cap.0, "loosening means a larger cap");
         let effective_at = U64(now + plan.notice_ns.0);
@@ -322,6 +340,23 @@ impl Plans {
         event("loosen_applied", json!({ "plan": plan_id, "cap": p.cap }));
     }
 
+    /// Anyone may reveal a sealed plan's rules. The contract hashes them the same way the judge
+    /// does and records them only if they match the commitment published when the plan was made.
+    pub fn reveal(&mut self, plan_id: u32, max_per_release: U128, earliest: U64, min_gap_secs: U64, salt: String) -> bool {
+        let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
+        let sealed = plan.sealed.clone().unwrap_or_else(|| env::panic_str("not a sealed plan"));
+        require!(plan.revealed.is_none(), "already revealed");
+        let text = format!("chok-sealed-v1|{}|{}|{}|{}", max_per_release.0, earliest.0, min_gap_secs.0, salt);
+        let hash: String = env::sha256(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let matches = hash == sealed.commitment;
+        event("reveal_checked", json!({ "plan": plan_id, "matches": matches, "commitment": sealed.commitment, "hash": hash }));
+        if matches {
+            plan.revealed = Some(Revealed { max_per_release, earliest, min_gap_secs, salt, by: env::predecessor_account_id(), at: U64(env::block_timestamp()) });
+            event("revealed", json!({ "plan": plan_id, "max_per_release": max_per_release, "earliest": earliest, "min_gap_secs": min_gap_secs }));
+        }
+        matches
+    }
+
     /// The id the next plan will get (plans are never deleted), so a sealed plan's commitment can
     /// be worked out for it before it is made.
     pub fn next_plan_id(&self) -> u32 {
@@ -335,5 +370,85 @@ impl Plans {
     pub fn list_plans(&self, from: Option<u32>, limit: Option<u32>) -> Vec<(u32, Plan)> {
         let from = from.unwrap_or(0);
         self.plans.iter().filter(|(id, _)| **id >= from).take(limit.unwrap_or(50) as usize).map(|(id, p)| (*id, p.clone())).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::test_utils::VMContextBuilder;
+    use near_sdk::testing_env;
+
+    fn acc(s: &str) -> AccountId { s.parse().unwrap() }
+    fn ctx(by: &str, deposit: NearToken) {
+        testing_env!(VMContextBuilder::new().predecessor_account_id(acc(by)).attached_deposit(deposit).block_timestamp(1_000_000_000_000).build());
+    }
+    fn plan(c: &mut Plans, loosen: bool, sealed: Option<Sealed>) -> u32 {
+        ctx("dev.testnet", NearToken::from_near(1));
+        let id = c.create_plan(acc("coin.testnet"), acc("agent.testnet"), acc("dev.testnet"), U128(100), U64(60), U64(0), U64(120), 2000, sealed, loosen);
+        ctx("coin.testnet", NearToken::from_yoctonear(0));
+        c.ft_on_transfer(acc("dev.testnet"), U128(1_000), id.to_string());
+        id
+    }
+
+    #[test]
+    fn over_the_cap_is_busted_recorded_and_tightens() {
+        let mut c = Plans::new();
+        let id = plan(&mut c, true, None);
+        ctx("agent.testnet", NearToken::from_yoctonear(0));
+        assert!(!c.request_release(id, U128(150)));
+        let p = c.get_plan(id).unwrap();
+        assert_eq!((p.busted, p.cap.0, p.balance.0), (1, 80, 1_000));
+    }
+
+    #[test]
+    fn under_the_cap_releases() {
+        let mut c = Plans::new();
+        let id = plan(&mut c, true, None);
+        ctx("agent.testnet", NearToken::from_yoctonear(0));
+        assert!(c.request_release(id, U128(60)));
+        let p = c.get_plan(id).unwrap();
+        assert_eq!((p.releases, p.balance.0, p.released_in_period.0), (1, 940, 60));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the plan's holder can ask")]
+    fn only_the_holder_can_ask() {
+        let mut c = Plans::new();
+        let id = plan(&mut c, true, None);
+        ctx("stranger.testnet", NearToken::from_yoctonear(0));
+        c.request_release(id, U128(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "this plan was launched to never loosen")]
+    fn a_plan_launched_not_to_loosen_never_loosens() {
+        let mut c = Plans::new();
+        let id = plan(&mut c, false, None);
+        ctx("dev.testnet", NearToken::from_yoctonear(0));
+        c.propose_loosen(id, U128(1_000));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the beneficiary can propose a loosening")]
+    fn the_holder_can_never_loosen() {
+        let mut c = Plans::new();
+        let id = plan(&mut c, true, None);
+        ctx("agent.testnet", NearToken::from_yoctonear(0));
+        c.propose_loosen(id, U128(1_000));
+    }
+
+    #[test]
+    fn reveal_is_checked_against_the_commitment_on_chain() {
+        let text = "chok-sealed-v1|300|0|30|ab";
+        let commitment: String = env::sha256(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let sealed = Sealed { commitment, judge_url: "https://x".into(), judge_hash: "h".into(), outlayer: acc("outlayer.testnet"), secrets_owner: acc("dev.testnet"), secrets_profile: "p".into() };
+        let mut c = Plans::new();
+        let id = plan(&mut c, false, Some(sealed));
+        ctx("anyone.testnet", NearToken::from_yoctonear(0));
+        assert!(!c.reveal(id, U128(301), U64(0), U64(30), "ab".into()));
+        assert!(c.get_plan(id).unwrap().revealed.is_none());
+        assert!(c.reveal(id, U128(300), U64(0), U64(30), "ab".into()));
+        assert_eq!(c.get_plan(id).unwrap().revealed.unwrap().max_per_release.0, 300);
     }
 }

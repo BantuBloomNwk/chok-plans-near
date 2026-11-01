@@ -59,6 +59,7 @@ async function ask(id, amount, label) {
 const made = await call(dev, S.plan, 'create_plan', {
   token: S.coin, holder: S.agent, beneficiary: S.dev, cap: T(10_000_000), period_secs: '60', start_in_secs: '0', notice_secs: '120', penalty_bps: 2000,
   sealed: { commitment, judge_url: JUDGE.url, judge_hash: JUDGE.hash, outlayer: 'outlayer.testnet', secrets_owner: S.dev, secrets_profile: 'chok' },
+  loosen_allowed: false,
 }, utils.format.parseNearAmount('0.05'));
 const id = JSON.parse(Buffer.from(made.status.SuccessValue, 'base64').toString());
 await call(dev, S.coin, 'ft_transfer_call', { receiver_id: S.plan, amount: T(50_000_000), msg: String(id) }, '1', '150000000000000');

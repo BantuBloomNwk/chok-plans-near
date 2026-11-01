@@ -150,7 +150,7 @@
         </div>
         <div class="chk"><span class="tick" id="t-judge">…</span><div><b>The judge is the code the plan pins.</b><div class="muted">Downloaded and hashed in your browser.</div><div class="mono" id="v-hash"></div></div></div>
         <div class="chk"><span class="tick ok">✓</span><div><b>Your plan's sealed rules are committed.</b><div class="mono" id="v-commit"></div></div></div>
-        <div class="chk"><span class="tick ok">✓</span><div><b>The agent's key does one thing.</b><div class="muted">It can call <span class="mono">request_release</span> on the plan contract. Nothing else, on any contract.</div></div></div>
+        <div class="chk"><span class="tick ok">✓</span><div><b>The agent's key does one thing.</b><div class="muted">It can call <span class="mono">request_release</span> on the plan contract. Nothing else, on any contract. The plan contract itself has no keys at all, so nobody can change it.</div></div></div>
         <button class="btn ghost" id="reveal" style="margin-top:10px;width:100%;justify-content:center">Reveal my plan's rules</button>
         <div class="reveal-box" id="reveal-box"></div>
       </div>
@@ -191,6 +191,7 @@
         <label>Most that may leave a minute, in millions<input id="dev-cap" inputmode="decimal" value="10"></label>
         <label>How much each Busted cuts the cap, %<input id="dev-penalty" inputmode="numeric" value="20"></label>
         <label>Public notice before any loosening, seconds<input id="dev-notice" inputmode="numeric" value="120"></label>
+        <label class="agent-toggle" style="font-weight:700"><input type="checkbox" id="dev-loosen"> Allow loosening later, after the public notice. Leave it off and nobody can ever raise the cap.</label>
         <div class="holder-pick"><label><input type="radio" name="dev-holder" value="me" checked> I hold it myself</label><label><input type="radio" name="dev-holder" value="agent"> Hire an agent to hold it</label></div>
         <p class="muted small">Hiring an agent adds one more transaction from your wallet: it creates <span class="mono">agent….yourname.testnet</span> with a single function-call key for <span class="mono">request_release</span> on the plan contract, 0.5 NEAR for its gas, and no full-access key at all.</p>
         <button class="btn" id="dev-make">Make my plan</button>
@@ -340,7 +341,7 @@ async function reveal() {
     const r = await post('/near/reveal', { plan: mine.plan });
     const hex = await sha256Hex(new TextEncoder().encode(`chok-sealed-v1|${r.rules.max_per_release}|${r.rules.earliest}|${r.rules.min_gap_secs}|${r.rules.salt}`));
     const ok = hex === mine.commitment;
-    $('reveal-box').innerHTML = `<b>Your plan's sealed rules</b><br>Biggest single release: <b>${M(r.rules.max_per_release)}</b><br>Minimum gap: <b>${r.rules.min_gap_secs} seconds</b><br><span class="muted">Salt</span> <span class="mono">${r.rules.salt}</span><div class="chk" style="margin-top:8px"><span class="tick ${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'}</span><div><b>${ok ? 'They hash to the commitment from the start.' : 'They do not match the commitment.'}</b><div class="muted">Your browser just checked it. Every other plan is still sealed.</div></div></div>`;
+    $('reveal-box').innerHTML = `<b>Your plan's sealed rules</b><br>Biggest single release: <b>${M(r.rules.max_per_release)}</b><br>Minimum gap: <b>${r.rules.min_gap_secs} seconds</b><br><span class="muted">Salt</span> <span class="mono">${r.rules.salt}</span><div class="chk" style="margin-top:8px"><span class="tick ${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'}</span><div><b>${ok ? 'They hash to the commitment from the start.' : 'They do not match the commitment.'}</b><div class="muted">Your browser just checked it, and so did the plan contract${r.onChain ? ' on chain' : ''}${r.tx ? ` (<a href="${tx(r.tx)}" target="_blank" rel="noreferrer">its reveal transaction</a>)` : ''}. Every other plan is still sealed.</div></div></div>`;
   } catch (e) { $('reveal-box').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   $('reveal-box').classList.add('on');
 }

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "bs58": "^6.0.0",
     "near-api-js": "5.1.1"
   }
 }

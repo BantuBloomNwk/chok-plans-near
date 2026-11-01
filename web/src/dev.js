@@ -16,7 +16,7 @@ import { PublicKey } from '@near-js/crypto';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
 const RPC = 'https://test.rpc.fastnear.com';
-const PLAN = 'plans.chokplans-mvxhykzp.testnet';
+const PLAN = 'locked.chokplans-mvxhykzp.testnet';
 const BUSDOG = 'coin.chokplans-mvxhykzp.testnet';
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;
@@ -87,7 +87,7 @@ function planRow([id, p], agents) {
     <div class="dev-actions">
       <label>Put tokens in<input class="d-in" inputmode="numeric" placeholder="tokens, e.g. 20000000"></label><button class="btn ghost d-deposit">Deposit</button>
       ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : `<label>Release<input class="d-amt" inputmode="numeric" placeholder="tokens, e.g. 50000000"></label><button class="btn d-release">Ask to release</button>`}
-      ${p.pending ? `<button class="btn ghost d-cancel">Cancel the loosening</button>` : `<button class="btn ghost d-loosen">Propose a looser cap</button>`}
+      ${!p.loosen_allowed ? '<p class="muted small" style="grid-column:1/-1">Launched to never loosen: no one can ever raise this cap.</p>' : p.pending ? `<button class="btn ghost d-cancel">Cancel the loosening</button>` : `<button class="btn ghost d-loosen">Propose a looser cap</button>`}
     </div>
   </div>`;
 }
@@ -127,7 +127,7 @@ async function makePlan() {
     ] });
     keep.set(`cpn.agents.${me}`, [...(keep.get(`cpn.agents.${me}`) || []), a.agent]);
   }
-  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token, holder, beneficiary: me, cap: tokens(cap * 1e6), period_secs: '60', start_in_secs: '0', notice_secs: String(notice), penalty_bps: Math.round(penalty * 100), sealed: null }, 100, NEAR(0.05))] });
+  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token, holder, beneficiary: me, cap: tokens(cap * 1e6), period_secs: '60', start_in_secs: '0', notice_secs: String(notice), penalty_bps: Math.round(penalty * 100), sealed: null, loosen_allowed: $('dev-loosen').checked }, 100, NEAR(0.05))] });
   await send(txs, holderMode === 'agent' ? 'Hiring your agent and making the plan' : 'Making your plan');
 }
 
