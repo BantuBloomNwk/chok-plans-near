@@ -413,11 +413,17 @@ export function createTerminal(root, opts) {
     el.style.top = `${Math.max(8, Math.min(y + 12, p.height - el.offsetHeight - 8))}px`;
   }
   plot.addEventListener('mousemove', tip);
-  plot.addEventListener('mouseleave', () => { $('.term-tip').hidden = true; });
+  plot.addEventListener('mouseleave', () => { $('.term-tip').hidden = true; legend(); });
   plot.addEventListener('click', () => { const href = st.over?.trade && o.link(st.over.trade.who); if (href) window.open(href, '_blank', 'noopener'); });
   plot.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  chart.subscribeAction('onCrosshairChange', (d) => legend(d?.kLineData));
+  // the crosshair reports only where it is, so ask which candle that is
+  chart.subscribeAction('onCrosshairChange', (d) => {
+    if (d?.x == null) return;
+    const point = chart.convertFromPixel([{ x: d.x }], { paneId: PANE });
+    const at = Array.isArray(point) ? point[0] : point;
+    legend(chart.getDataList()[at?.dataIndex]);
+  });
 
   root.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
