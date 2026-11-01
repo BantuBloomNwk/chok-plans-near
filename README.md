@@ -146,7 +146,7 @@ Sealed plans also need the OutLayer CLI logged in as the dev, the judge hosted a
 - **Scripts and the playground:** near-api-js 5.1.1, FastNEAR's testnet RPC, NEAR AI Cloud, `@phala/dcap-qvl` (Intel quote checks), `ethers` (signature recovery) and NVIDIA's attestation service.
 - **The page:** Vite and NEAR Wallet Selector 10 (MyNearWallet, Meteor, HERE, Intear).
 
-Much of the code was written with an AI coding assistant, working to our design. Every decision about what the contracts allow, and every claim in this README, was made and checked by us. `npm run verify` is there so you don't have to take our word for any of it.
+The code was written with an AI coding assistant, working to our design. Every decision about what the contracts allow, and every claim in this README, was made and checked by us. `npm run verify` is there so you don't have to take our word for any of it.
 
 ## License
 
