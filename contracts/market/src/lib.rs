@@ -3,8 +3,10 @@
 //! coin's sale supply plus a virtual reserve on each side. There is no order book and no one to
 //! trust with the money: the NEAR paid in stays in the coin's own pool until someone sells.
 //!
-//! The dev's own bag is not here. It sits in a CHOK plan, and reaches this market only when the
-//! plan lets it out. Every trade is kept on chain, so the chart and the tape need nobody's server.
+//! A coin lists only as part of its launch: the launcher makes the coin, mints the sale supply here
+//! and the dev's share into a plan, all in one transaction. So the dev's bag reaches this market only
+//! when the plan lets it out. Every trade is kept on chain, so the chart and the tape need nobody's
+//! server.
 //!
 //! Prices are worked in micro-NEAR (10^-6 NEAR) so the curve's products fit in a u128; any dust
 //! that rounds away stays in the pool.
@@ -22,13 +24,16 @@ const VIRTUAL_NEAR_M: u128 = 3_000_000;
 /// The virtual token side is this share of the sale supply, so selling out raises 12 NEAR.
 const VIRTUAL_TOKEN_DIV: u128 = 4;
 const FEE_BPS: u128 = 100;
-/// Kept back from each trade to pay for storing its record.
-const TRADE_STORAGE: NearToken = NearToken::from_micronear(1_000);
+/// Held back from each trade to store its record; the worst case for the longest account names.
+/// What the record really takes is measured, and the rest goes back to the trader.
+const TRADE_STORAGE: NearToken = NearToken::from_micronear(2_500);
 /// Registers a buyer on the coin so the tokens can reach them.
 const TOKEN_STORAGE: NearToken = NearToken::from_micronear(1_250);
 const GAS_STORAGE: Gas = Gas::from_tgas(10);
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_CALLBACK: Gas = Gas::from_tgas(15);
+const GAS_CHECK: Gas = Gas::from_tgas(5);
+const GAS_ROUTE: Gas = Gas::from_tgas(60);
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -41,6 +46,8 @@ enum Key {
 #[derive(Clone)]
 pub struct Pool {
     pub creator: AccountId,
+    /// The plan holding the dev's share, in the plan contract.
+    pub plan: u32,
     pub sale_supply: U128,
     /// tokens still for sale, held by this contract
     pub tokens_left: U128,
@@ -79,15 +86,14 @@ pub struct PoolView {
 #[derive(Deserialize)]
 #[serde(crate = "near_sdk::serde", rename_all = "snake_case")]
 enum Msg {
-    List {},
     Sell { min_out: U128 },
 }
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Market {
-    /// only coins that are direct sub-accounts of this account may be listed. It is an account
-    /// that exists only to make coins, so nothing else can ever live under it.
+    /// Only coins that are direct sub-accounts of this account may list. It is a contract with no
+    /// keys that makes coins from one fixed token, so nothing else can ever live under it.
     launcher: AccountId,
     pools: IterableMap<AccountId, Pool>,
     /// trade n of a coin, under "<coin>#n"; the pool counts them
@@ -119,75 +125,118 @@ impl Market {
         Self { launcher, pools: IterableMap::new(Key::Pools), trades: LookupMap::new(Key::Trades) }
     }
 
-    fn record(&mut self, token: &AccountId, buy: bool, trader: &AccountId, near: u128, tokens: u128) {
+    /// Keeps a trade on chain and returns what storing it really cost.
+    fn record(&mut self, token: &AccountId, buy: bool, trader: &AccountId, near: u128, tokens: u128) -> u128 {
+        let before = env::storage_usage();
         let pool = self.pools.get_mut(token).unwrap();
         let n = pool.trades;
         pool.trades += 1;
         pool.volume_near = U128(pool.volume_near.0 + near);
         let t = Trade { at_ms: U64(env::block_timestamp_ms()), buy, trader: trader.clone(), near: U128(near), tokens: U128(tokens), price: U128(price(pool)) };
         self.trades.insert(format!("{token}#{n}"), t.clone());
+        self.trades.flush();
         log!("EVENT_JSON:{}", json!({ "standard": "chok-market", "version": "1.0.0", "event": "trade", "data": [{ "token": token, "buy": buy, "trader": trader, "near": U128(near), "tokens": U128(tokens), "price": t.price }] }));
+        env::storage_byte_cost().as_yoctonear() * (env::storage_usage() - before) as u128
     }
 
-    /// Buy `token` with the attached NEAR. At least `min_out` tokens or nothing happens.
+    /// Buy `token` with the attached NEAR. At least `min_out` tokens or nothing happens. At the very
+    /// end of the curve you pay only for the tokens that are left, and the rest comes back.
     #[payable]
     pub fn buy(&mut self, token: AccountId, min_out: U128) -> Promise {
         let buyer = env::predecessor_account_id();
         let paid = env::attached_deposit().as_yoctonear();
         let overhead = TRADE_STORAGE.as_yoctonear() + TOKEN_STORAGE.as_yoctonear();
-        require!(paid > overhead + MICRO * 1_000, "attach at least 0.0033 NEAR");
+        require!(paid > overhead + MICRO * 1_000, "attach at least 0.0048 NEAR");
         let pool = self.pools.get_mut(&token).unwrap_or_else(|| env::panic_str("that coin is not listed"));
+        require!(pool.tokens_left.0 > 0, "this coin's curve has sold out");
         let net = paid - overhead;
         let fee = net * FEE_BPS / 10_000;
         let in_m = (net - fee) / MICRO;
-        let out = buy_out(pool, in_m).min(pool.tokens_left.0);
+        let wanted = buy_out(pool, in_m);
+        // past the end of the curve: the exact micro-NEAR for what is left, x * t / (y - t), rounded up
+        let (out, into_pool, fee, excess) = if wanted >= pool.tokens_left.0 {
+            let t = pool.tokens_left.0;
+            let need = (x_m(pool) * t).div_ceil(y(pool) - t).min(in_m);
+            let into = need * MICRO;
+            let fee = (into * FEE_BPS).div_ceil(10_000 - FEE_BPS);
+            (t, into, fee, net - into - fee)
+        } else {
+            let into = in_m * MICRO;
+            // the fee plus the rounding dust; the curve only counts whole micro-NEAR
+            (wanted, into, net - into, 0)
+        };
         require!(out > 0, "too small to buy anything");
         require!(out >= min_out.0, "the price moved past your limit");
-        let into_pool = in_m * MICRO;
-        // the creator's fee and the rounding dust; the curve only counts whole micro-NEAR
-        pool.fees_owed = U128(pool.fees_owed.0 + fee + (net - fee - into_pool));
+        pool.fees_owed = U128(pool.fees_owed.0 + fee);
         pool.real_near = U128(pool.real_near.0 + into_pool);
         pool.tokens_left = U128(pool.tokens_left.0 - out);
+        // the coin keeps its own register, so ask it whether the buyer is on it yet
         Promise::new(token.clone())
-            .function_call("storage_deposit", json!({ "account_id": buyer, "registration_only": true }).to_string().into_bytes(), TOKEN_STORAGE, GAS_STORAGE)
-            .then(Promise::new(token.clone()).function_call("ft_transfer", json!({ "receiver_id": buyer, "amount": U128(out) }).to_string().into_bytes(), NearToken::from_yoctonear(1), GAS_FT_TRANSFER))
-            .then(Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_bought(token, buyer, U128(out), U128(into_pool), U128(paid - TRADE_STORAGE.as_yoctonear() - TOKEN_STORAGE.as_yoctonear())))
+            .function_call("storage_balance_of", json!({ "account_id": buyer }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_CHECK)
+            .then(Self::ext(env::current_account_id()).with_static_gas(GAS_ROUTE).on_registered_check(token, buyer, U128(out), U128(into_pool), U128(fee), U128(excess)))
     }
 
-    /// The tokens reached the buyer: record the trade. They didn't: put the pool back and refund.
+    /// A buyer already on the coin's register keeps their registration money.
     #[private]
-    pub fn on_bought(&mut self, token: AccountId, buyer: AccountId, out: U128, into_pool: U128, refund: U128, #[callback_result] sent: Result<(), PromiseError>) -> bool {
+    pub fn on_registered_check(&mut self, token: AccountId, buyer: AccountId, out: U128, into_pool: U128, fee: U128, excess: U128, #[callback_result] registered: Result<Option<near_sdk::serde_json::Value>, PromiseError>) -> Promise {
+        let known = matches!(registered, Ok(Some(_)));
+        let send = Promise::new(token.clone()).function_call("ft_transfer", json!({ "receiver_id": buyer, "amount": out }).to_string().into_bytes(), NearToken::from_yoctonear(1), GAS_FT_TRANSFER);
+        let chain = if known { send } else {
+            Promise::new(token.clone()).function_call("storage_deposit", json!({ "account_id": buyer, "registration_only": true }).to_string().into_bytes(), TOKEN_STORAGE, GAS_STORAGE).then(send)
+        };
+        let back = excess.0 + if known { TOKEN_STORAGE.as_yoctonear() } else { 0 };
+        chain.then(Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_bought(token, buyer, out, into_pool, fee, U128(back)))
+    }
+
+    /// The tokens reached the buyer: record the trade and give back what wasn't needed. They
+    /// didn't: put the pool back and refund, from this pool only, so a failed buy can never reach
+    /// another coin's NEAR.
+    #[private]
+    pub fn on_bought(&mut self, token: AccountId, buyer: AccountId, out: U128, into_pool: U128, fee: U128, back: U128, #[callback_result] sent: Result<(), PromiseError>) -> bool {
         if sent.is_ok() {
-            self.record(&token, true, &buyer, into_pool.0, out.0);
+            let used = self.record(&token, true, &buyer, into_pool.0, out.0);
+            let refund = back.0 + TRADE_STORAGE.as_yoctonear().saturating_sub(used);
+            if refund > 0 { let _ = Promise::new(buyer).transfer(NearToken::from_yoctonear(refund)); }
             return true;
         }
-        // only this pool's own money goes back, so a failed buy can never reach another coin's NEAR
         let pool = self.pools.get_mut(&token).unwrap();
         let from_pool = into_pool.0.min(pool.real_near.0);
-        let from_fees = refund.0.saturating_sub(into_pool.0).min(pool.fees_owed.0);
+        let from_fees = fee.0.min(pool.fees_owed.0);
         pool.tokens_left = U128(pool.tokens_left.0 + out.0);
         pool.real_near = U128(pool.real_near.0 - from_pool);
         pool.fees_owed = U128(pool.fees_owed.0 - from_fees);
-        Promise::new(buyer).transfer(NearToken::from_yoctonear(from_pool + from_fees));
+        let _ = Promise::new(buyer).transfer(NearToken::from_yoctonear(from_pool + from_fees + back.0 + TRADE_STORAGE.as_yoctonear()));
         false
     }
 
-    /// Listing (from the coin's creator) and selling (from anyone) both arrive as tokens.
+    /// The launch itself, from a coin the launcher just made: the sale supply was minted straight
+    /// here, and the coin's plan was made a moment before. No plan, no listing.
+    #[payable]
+    pub fn list_launched(&mut self, creator: AccountId, sale: U128, #[callback_result] plan: Result<u32, PromiseError>) -> bool {
+        let token = env::predecessor_account_id();
+        let suffix = format!(".{}", self.launcher);
+        let label = token.as_str().strip_suffix(&suffix).unwrap_or_else(|| env::panic_str("only coins made by the launcher can be listed"));
+        require!(!label.is_empty() && !label.contains('.'), "only coins made by the launcher can be listed");
+        require!(!self.pools.contains_key(&token), "already listed");
+        require!(sale.0 >= 1_000_000, "list at least one whole token");
+        let plan = plan.unwrap_or_else(|_| env::panic_str("a coin with no plan cannot list"));
+        let before = env::storage_usage();
+        let pool = Pool { creator: creator.clone(), plan, sale_supply: sale, tokens_left: sale, virtual_tokens: U128(sale.0 / VIRTUAL_TOKEN_DIV), real_near: U128(0), fees_owed: U128(0), volume_near: U128(0), trades: 0, listed_at: U64(env::block_timestamp_ms()) };
+        log!("EVENT_JSON:{}", json!({ "standard": "chok-market", "version": "1.0.0", "event": "listed", "data": [{ "token": token, "creator": creator, "plan": plan, "sale_supply": sale, "price": U128(price(&pool)) }] }));
+        self.pools.insert(token.clone(), pool);
+        self.pools.flush();
+        let cost = env::storage_byte_cost().as_yoctonear() * (env::storage_usage() - before) as u128;
+        let paid = env::attached_deposit().as_yoctonear();
+        require!(paid >= cost, "the launch must pay for its pool's storage");
+        if paid > cost { let _ = Promise::new(token).transfer(NearToken::from_yoctonear(paid - cost)); }
+        true
+    }
+
+    /// Selling arrives as tokens.
     pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> PromiseOrValue<U128> {
         let token = env::predecessor_account_id();
-        let msg: Msg = serde_json::from_str(&msg).unwrap_or_else(|_| env::panic_str("msg must be {\"list\":{}} or {\"sell\":{\"min_out\":\"…\"}}"));
+        let msg: Msg = serde_json::from_str(&msg).unwrap_or_else(|_| env::panic_str("msg must be {\"sell\":{\"min_out\":\"…\"}}"));
         match msg {
-            Msg::List {} => {
-                let suffix = format!(".{}", self.launcher);
-                let label = token.as_str().strip_suffix(&suffix).unwrap_or_else(|| env::panic_str("only coins made by the launcher can be listed"));
-                require!(!label.is_empty() && !label.contains('.'), "only coins made by the launcher can be listed");
-                require!(!self.pools.contains_key(&token), "already listed");
-                require!(amount.0 >= 1_000_000, "list at least one whole token");
-                let pool = Pool { creator: sender_id.clone(), sale_supply: amount, tokens_left: amount, virtual_tokens: U128(amount.0 / VIRTUAL_TOKEN_DIV), real_near: U128(0), fees_owed: U128(0), volume_near: U128(0), trades: 0, listed_at: U64(env::block_timestamp_ms()) };
-                log!("EVENT_JSON:{}", json!({ "standard": "chok-market", "version": "1.0.0", "event": "listed", "data": [{ "token": token, "creator": sender_id, "sale_supply": amount, "price": U128(price(&pool)) }] }));
-                self.pools.insert(token, pool);
-                PromiseOrValue::Value(U128(0))
-            }
             Msg::Sell { min_out } => {
                 let pool = self.pools.get_mut(&token).unwrap_or_else(|| env::panic_str("that coin is not listed"));
                 let out = (sell_out(pool, amount.0) * MICRO).min(pool.real_near.0);
@@ -199,8 +248,8 @@ impl Market {
                 pool.real_near = U128(pool.real_near.0 - out);
                 pool.tokens_left = U128(pool.tokens_left.0 + amount.0);
                 pool.fees_owed = U128(pool.fees_owed.0 + fee);
-                self.record(&token, false, &sender_id, out, amount.0);
-                Promise::new(sender_id).transfer(NearToken::from_yoctonear(paid));
+                let used = self.record(&token, false, &sender_id, out, amount.0);
+                let _ = Promise::new(sender_id).transfer(NearToken::from_yoctonear(paid + keep.saturating_sub(used)));
                 PromiseOrValue::Value(U128(0))
             }
         }
@@ -230,8 +279,16 @@ impl Market {
         U128(out.saturating_sub(out * FEE_BPS / 10_000 + TRADE_STORAGE.as_yoctonear()))
     }
 
+    /// What the curve itself would pay for these tokens in yocto, before the cap at the NEAR the
+    /// pool holds and before fees. It is how anyone can check whether a pool can pay its sellers.
+    pub fn curve_sell(&self, token: AccountId, amount: U128) -> U128 {
+        let pool = self.pools.get(&token).unwrap_or_else(|| env::panic_str("that coin is not listed"));
+        U128(sell_out(pool, amount.0) * MICRO)
+    }
+
     fn view(token: &AccountId, pool: &Pool) -> PoolView {
-        let sold = pool.sale_supply.0 - pool.tokens_left.0;
+        // a dev's released tokens can come back to the pool, so more can be here than it ever sold
+        let sold = pool.sale_supply.0.saturating_sub(pool.tokens_left.0);
         PoolView { token: token.clone(), pool: pool.clone(), price: U128(price(pool)), sold_bps: (sold * 10_000 / pool.sale_supply.0) as u32 }
     }
 
@@ -267,9 +324,9 @@ mod tests {
     const NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 
     fn listed() -> Market {
-        ctx("coin.root.testnet", 0);
         let mut m = Market::new("root.testnet".parse().unwrap());
-        m.ft_on_transfer("dev.root.testnet".parse().unwrap(), U128(800_000_000 * T), r#"{"list":{}}"#.into());
+        testing_env!(VMContextBuilder::new().current_account_id("market.root.testnet".parse().unwrap()).predecessor_account_id("coin.root.testnet".parse().unwrap()).attached_deposit(NearToken::from_millinear(50)).build());
+        m.list_launched("dev.root.testnet".parse().unwrap(), U128(800_000_000 * T), Ok(4));
         m
     }
 
@@ -307,17 +364,82 @@ mod tests {
     #[test]
     #[should_panic(expected = "only coins made by the launcher can be listed")]
     fn outside_coins_cannot_list() {
-        ctx("evil.testnet", 0);
+        ctx("evil.testnet", NEAR);
         let mut m = Market::new("root.testnet".parse().unwrap());
-        m.ft_on_transfer("evil.testnet".parse().unwrap(), U128(T), r#"{"list":{}}"#.into());
+        m.list_launched("evil.testnet".parse().unwrap(), U128(T), Ok(0));
     }
 
     #[test]
     #[should_panic(expected = "only coins made by the launcher can be listed")]
     fn nested_accounts_cannot_list() {
-        ctx("x.coin.root.testnet", 0);
+        ctx("x.coin.root.testnet", NEAR);
         let mut m = Market::new("root.testnet".parse().unwrap());
+        m.list_launched("dev.testnet".parse().unwrap(), U128(T), Ok(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "a coin with no plan cannot list")]
+    fn no_plan_no_listing() {
+        ctx("coin.root.testnet", NEAR);
+        let mut m = Market::new("root.testnet".parse().unwrap());
+        m.list_launched("dev.testnet".parse().unwrap(), U128(T), Err(PromiseError::Failed));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be")]
+    fn tokens_sent_in_cannot_list_themselves() {
+        let mut m = listed();
+        ctx("coin.root.testnet", 0);
         m.ft_on_transfer("dev.testnet".parse().unwrap(), U128(T), r#"{"list":{}}"#.into());
+    }
+
+    #[test]
+    fn a_pool_taking_back_more_than_it_sold_stays_readable() {
+        let mut m = listed();
+        let coin: AccountId = "coin.root.testnet".parse().unwrap();
+        ctx("fan.testnet", NEAR);
+        let _ = m.buy(coin.clone(), U128(0));
+        let bought = { let p = m.pools.get(&coin).unwrap(); p.sale_supply.0 - p.tokens_left.0 };
+        // the dev sells tokens the plan let out, on top of everything the buyer holds
+        ctx("coin.root.testnet", 0);
+        m.ft_on_transfer("dev.testnet".parse().unwrap(), U128(bought + 5_000_000 * T), r#"{"sell":{"min_out":"0"}}"#.into());
+        let v = m.get_pool(coin.clone()).unwrap();
+        assert!(v.pool.tokens_left.0 > v.pool.sale_supply.0);
+        assert_eq!(v.sold_bps, 0);
+        assert_eq!(m.list_pools(None, None).len(), 1);
+    }
+
+    #[test]
+    fn the_last_buyer_pays_only_for_what_is_left() {
+        let mut m = listed();
+        let coin: AccountId = "coin.root.testnet".parse().unwrap();
+        // the whole curve costs 12 NEAR before fees, so 20 NEAR is too much
+        ctx("whale.testnet", 20 * NEAR);
+        let _ = m.buy(coin.clone(), U128(0));
+        let p = m.pools.get(&coin).unwrap();
+        assert_eq!(p.tokens_left.0, 0);
+        let took = p.real_near.0 + p.fees_owed.0;
+        assert!(p.real_near.0 >= 12 * NEAR && p.real_near.0 < 12 * NEAR + MICRO * 2, "took {}", p.real_near.0);
+        assert!(took < 13 * NEAR, "the rest must go back, took {took}");
+    }
+
+    #[test]
+    #[should_panic(expected = "sold out")]
+    fn nothing_left_nothing_to_buy() {
+        let mut m = listed();
+        let coin: AccountId = "coin.root.testnet".parse().unwrap();
+        ctx("whale.testnet", 20 * NEAR);
+        let _ = m.buy(coin.clone(), U128(0));
+        let _ = m.buy(coin, U128(0));
+    }
+
+    #[test]
+    fn a_trade_record_fits_what_is_held_back_for_it() {
+        let mut m = listed();
+        let coin: AccountId = "coin.root.testnet".parse().unwrap();
+        let longest: AccountId = format!("{}.testnet", "a".repeat(56)).parse().unwrap();
+        let used = m.record(&coin, true, &longest, u128::MAX / 4, u128::MAX / 4);
+        assert!(used <= TRADE_STORAGE.as_yoctonear(), "a record took {used}");
     }
 
     #[test]

@@ -16,9 +16,10 @@ import { PublicKey } from '@near-js/crypto';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
 const RPC = 'https://test.rpc.fastnear.com';
-const PLAN = 'sealed.chokplans-mvxhykzp.testnet';
-const BUSDOG = 'coin.chokplans-mvxhykzp.testnet';
-const MARKET = 'market.chokplans-mvxhykzp.testnet';
+const PLAN = 'book.chokplans-mvxhykzp.testnet';
+const BUSDOG = 'busdog.chokplans-mvxhykzp.testnet';
+const MARKET = 'bourse.chokplans-mvxhykzp.testnet';
+const LAUNCHER = 'launchpad.chokplans-mvxhykzp.testnet';
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;
 const tokens = (n) => (BigInt(Math.round(n)) * 1_000_000n).toString();
@@ -72,12 +73,12 @@ function status(text, bad = false) { const el = $('dev-status'); el.textContent 
 
 // everything about this account, read from the chain
 async function state() {
-  const plans = (await view(PLAN, 'list_plans', { from: 0, limit: 500 })).filter(([, p]) => p.beneficiary === me || p.holder === me);
-  const coins = [BUSDOG, ...(keep.get('cpn.mycoins') || [])];
+  const plans = await view(PLAN, 'plans_of', { account: me });
+  // the coins you launched are the tokens of your plans, on the chain, not this browser's memory
+  const coins = [...new Set([BUSDOG, ...plans.map(([, p]) => p.token)])];
   const balances = await Promise.all(coins.map((c) => view(c, 'ft_balance_of', { account_id: me }).catch(() => '0')));
-  const agents = keep.get(`cpn.agents.${me}`) || [];
-  const listed = await Promise.all(coins.map((c) => (c === BUSDOG ? true : view(MARKET, 'get_pool', { token: c }).then((p) => !!p).catch(() => false))));
-  return { plans, coins: coins.map((c, i) => ({ coin: c, balance: balances[i], listed: listed[i] })), agents };
+  const agents = (keep.get(`cpn.agents.${me}`) || []).map((a) => (typeof a === 'string' ? { agent: a } : a));
+  return { plans, coins: coins.map((c, i) => ({ coin: c, balance: balances[i] })), agents };
 }
 
 function planRow([id, p], agents) {
@@ -92,11 +93,14 @@ function planRow([id, p], agents) {
       <div class="stat good"><b>${p.releases}</b><span>Released</span></div>
       <div class="stat bad"><b>${p.busted}</b><span>Busted</span></div>
     </div>
+    <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR.</p>
     ${opensIn ? `<p class="muted small">Nothing can leave for another ${opensIn}s.</p>` : ''}
+    ${p.pending_holder ? `<p class="small"><b>New holder pending:</b> <span class="mono">${esc(p.pending_holder.holder)}</span> at ${new Date(Number(p.pending_holder.effective_at) / 1e6).toLocaleTimeString()}.</p>` : ''}
     ${p.pending ? `<p class="small"><b>Loosening pending:</b> cap to ${M(p.pending.cap)} at ${new Date(Number(p.pending.effective_at) / 1e6).toLocaleTimeString()}. Everyone can see it.</p>` : ''}
     <div class="dev-actions">
       <label>Put tokens in<input class="d-in" inputmode="numeric" placeholder="tokens, e.g. 20000000"></label><button class="btn ghost d-deposit">Deposit</button>
       ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : `<label>Release<input class="d-amt" inputmode="numeric" placeholder="tokens, e.g. 50000000"></label><button class="btn d-release">Ask to release</button>`}
+      ${p.beneficiary === me ? (p.pending_holder ? (Date.now() * 1e6 >= Number(p.pending_holder.effective_at) ? '<button class="btn ghost d-holder-apply">Make the new holder official</button>' : '<button class="btn ghost d-holder-cancel">Cancel the new holder</button>') : '<button class="btn ghost d-holder">Replace the holder</button>') : ''}
       ${!p.loosen_allowed ? '<p class="muted small" style="grid-column:1/-1">Launched to never loosen: no one can ever raise this cap.</p>' : p.pending ? `<button class="btn ghost d-cancel">Cancel the loosening</button>` : `<button class="btn ghost d-loosen">Propose a looser cap</button>`}
     </div>
   </div>`;
@@ -108,11 +112,10 @@ async function render() {
   if (!me) return;
   try {
     const s = await state();
-    $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span>${c.coin === BUSDOG ? '' : c.listed ? ` <a href="#coin=${encodeURIComponent(c.coin)}" class="small" onclick="setTimeout(()=>window.cpnMarketRefresh?.(),50)">trading in the market</a>` : BigInt(c.balance) > 0n ? `<div><button class="btn ghost d-list" data-coin="${esc(c.coin)}" data-amount="${(BigInt(c.balance) * 8n / 10n).toString()}" style="margin-top:6px">Put 80% on sale in the market</button><span class="muted small"> then lock the rest in a plan below</span></div>` : ''}</div></div>`).join('');
-    $('dev-token').innerHTML = s.coins.map((c) => `<option value="${esc(c.coin)}">${esc(c.coin)}</option>`).join('');
+    $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span>${c.coin === BUSDOG ? '' : ` <a href="#trade" class="small d-open" data-coin="${esc(c.coin)}">open it in the market</a>`}</div></div>`).join('');
     $('dev-plans').innerHTML = s.plans.length ? s.plans.sort((a, b) => b[0] - a[0]).map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Make one above.</p>';
     // the agents you hired: show their keys straight from the chain
-    const rows = await Promise.all(s.agents.map(async (a) => {
+    const rows = await Promise.all(s.agents.map(async ({ agent: a }) => {
       const keys = await keysOf(a);
       const desc = keys ? keys.map((k) => (k.access_key.permission === 'FullAccess' ? 'FULL ACCESS' : `${k.access_key.permission.FunctionCall.method_names.join(', ')} on ${k.access_key.permission.FunctionCall.receiver_id}`)).join('; ') : 'not created yet';
       return `<div class="chk"><span class="tick ${keys && keys.every((k) => k.access_key.permission !== 'FullAccess') ? 'ok' : ''}">✓</span><div><a class="mono" href="${explorer('address', a)}" target="_blank" rel="noreferrer">${esc(a)}</a><div class="muted small">${keys ? keys.length : 0} key(s): ${esc(desc)}</div></div></div>`;
@@ -121,24 +124,52 @@ async function render() {
   } catch (e) { status(e.message, true); }
 }
 
-async function makePlan() {
-  const token = $('dev-token').value, cap = Number($('dev-cap').value || 10), penalty = Number($('dev-penalty').value || 20), notice = Number($('dev-notice').value || 120);
-  const holderMode = document.querySelector('input[name="dev-holder"]:checked').value;
-  const txs = [];
-  let holder = me;
-  if (holderMode === 'agent') {
-    // a fresh account under yours whose only key can call request_release on the plan contract
-    const a = await post('/near/agent/new', { owner: me });
-    holder = a.agent;
-    txs.push({ receiverId: a.agent, actions: [
-      actionCreators.createAccount(),
-      actionCreators.transfer(NEAR(0.5)),
-      actionCreators.addKey(PublicKey.fromString(a.publicKey), actionCreators.functionCallAccessKey(a.contract, [a.method], NEAR(0.45))),
-    ] });
-    keep.set(`cpn.agents.${me}`, [...(keep.get(`cpn.agents.${me}`) || []), a.agent]);
+// the holder: you, or a fresh account under yours whose only key can call request_release on the
+// plan contract. Our server makes that key so the agent can act for you, and only you get the ticket
+// that lets anyone give it orders.
+async function hireIfAsked() {
+  const mode = document.querySelector('input[name="dev-holder"]:checked').value;
+  if (mode !== 'agent') return { holder: me, txs: [] };
+  const a = await post('/near/agent/new', { owner: me });
+  keep.set(`cpn.agents.${me}`, [...(keep.get(`cpn.agents.${me}`) || []).map((x) => (typeof x === 'string' ? { agent: x } : x)), { agent: a.agent, ticket: a.ticket }]);
+  return { holder: a.agent, txs: [{ receiverId: a.agent, actions: [
+    actionCreators.createAccount(),
+    actionCreators.transfer(NEAR(0.5)),
+    actionCreators.addKey(PublicKey.fromString(a.publicKey), actionCreators.functionCallAccessKey(a.contract, [a.method], NEAR(0.45))),
+  ] }] };
+}
+const termsFromForm = () => ({ cap: Number($('dev-cap').value || 20), penalty: Number($('dev-penalty').value || 20), notice: Number($('dev-notice').value || 120), loosen: $('dev-loosen').checked });
+
+// one call: the coin, 80% on sale, 20% in your plan. Your wallet signs and pays if it can.
+async function launch() {
+  const name = $('dev-cname').value.trim(), symbol = $('dev-csym').value.trim();
+  if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return status('Give it a name and a ticker of 2 to 8 letters or numbers.', true);
+  const f = termsFromForm();
+  const { holder, txs } = await hireIfAsked();
+  const cost = BigInt(await view(LAUNCHER, 'launch_cost', {}));
+  const account = await rpc('query', { request_type: 'view_account', finality: 'optimistic', account_id: me });
+  if (BigInt(account.amount) > cost + (txs.length ? NEAR(0.6) : NEAR(0.1))) {
+    const capRaw = BigInt(Math.round(f.cap * 1e6)) * 1_000_000n;
+    const terms = { holder, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed: null, loosen_allowed: f.loosen };
+    await send([...txs, { receiverId: LAUNCHER, actions: [fc('launch', { name, symbol, terms }, 280, cost)] }], `Launching $${symbol.toUpperCase()}`);
+  } else {
+    if (txs.length) await send(txs, 'Hiring your agent');
+    status(`Your wallet is short of the ${(Number(cost / 10n ** 21n) / 1000).toFixed(2)} NEAR a launch costs, so we're paying for this one. About half a minute…`);
+    await post('/near/my-coin', { owner: me, name, symbol, terms: { capMillions: f.cap, penaltyBps: Math.round(f.penalty * 100), noticeSecs: f.notice, loosen: f.loosen, holder } });
+    status(`$${symbol.toUpperCase()} is live. 80% is on sale and your 20% is in its plan.`);
   }
-  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token, holder, beneficiary: me, cap: tokens(cap * 1e6), period_secs: '60', start_in_secs: '0', notice_secs: String(notice), penalty_bps: Math.round(penalty * 100), sealed: null, loosen_allowed: $('dev-loosen').checked }, 100, NEAR(0.05))] });
-  await send(txs, holderMode === 'agent' ? 'Hiring your agent and making the plan' : 'Making your plan');
+  await new Promise((r) => setTimeout(r, 2500));
+  await render();
+  window.cpnMarketRefresh?.();
+}
+
+// a plan for tokens you already hold: the demo coin
+async function makePlan() {
+  const f = termsFromForm();
+  const { holder, txs } = await hireIfAsked();
+  const capRaw = BigInt(Math.round(f.cap * 1e6)) * 1_000_000n;
+  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token: BUSDOG, holder, beneficiary: me, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed: null, loosen_allowed: f.loosen }, 100, NEAR(0.05))] });
+  await send(txs, holder !== me ? 'Hiring your agent and making the plan' : 'Making your plan');
 }
 
 async function onPlanClick(e) {
@@ -158,7 +189,13 @@ async function onPlanClick(e) {
     if (n > 0) await send([{ receiverId: PLAN, actions: [fc('propose_loosen', { plan_id: id, cap: tokens(n * 1e6) }, 50)] }], 'Proposing a looser cap');
   }
   if (e.target.classList.contains('d-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_loosen', { plan_id: id }, 50)] }], 'Cancelling the loosening');
-  if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token });
+  if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token, ticket: (keep.get(`cpn.agents.${me}`) || []).find((a) => a.agent === p.holder)?.ticket });
+  if (e.target.classList.contains('d-holder')) {
+    const who = (prompt('Which account should hold this plan? It takes over after the public notice, and you can cancel until then.') || '').trim();
+    if (who) await send([{ receiverId: PLAN, actions: [fc('propose_holder', { plan_id: id, holder: who }, 50, NEAR(0.002))] }], 'Proposing a new holder');
+  }
+  if (e.target.classList.contains('d-holder-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_holder', { plan_id: id }, 50)] }], 'Cancelling the new holder');
+  if (e.target.classList.contains('d-holder-apply')) await send([{ receiverId: PLAN, actions: [fc('apply_holder', { plan_id: id }, 50)] }], 'Making the new holder official');
 }
 
 async function main() {
@@ -169,21 +206,9 @@ async function main() {
   sync();
   $('dev-connect').onclick = async () => { if (me) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
   $('dev-faucet').onclick = async () => { status('Sending you 50M BUSDOG…'); try { await post('/near/faucet', { account: me }); status('50M BUSDOG sent.'); render(); } catch (e) { status(e.message, true); } };
-  $('dev-mycoin').onclick = async () => {
-    status('Deploying your coin, minted to you. About half a minute…');
-    try {
-      const c = await post('/near/my-coin', { owner: me, name: $('dev-cname').value.trim(), symbol: $('dev-csym').value.trim() });
-      keep.set('cpn.mycoins', [...(keep.get('cpn.mycoins') || []), c.coin]);
-      status(`$${c.symbol} is live and the whole billion is in your wallet.`); render();
-    } catch (e) { status(e.message, true); }
-  };
+  $('dev-mycoin').onclick = () => launch().catch((e) => status(e.message, true));
   $('dev-make').onclick = () => makePlan().catch(() => {});
-  $('dev-balances').onclick = async (e) => {
-    const b = e.target.closest('.d-list');
-    if (!b) return;
-    await send([{ receiverId: b.dataset.coin, actions: [fc('ft_transfer_call', { receiver_id: MARKET, amount: b.dataset.amount, msg: '{"list":{}}' }, 100, 1n)] }], 'Listing your coin').catch(() => {});
-    window.cpnMarketRefresh?.();
-  };
+  $('dev-balances').onclick = (e) => { const b = e.target.closest('.d-open'); if (b) window.cpnMarketOpen?.(b.dataset.coin); };
   $('dev-plans').onclick = (e) => onPlanClick(e).catch(() => {});
   setInterval(() => me && render(), 8000);
 }

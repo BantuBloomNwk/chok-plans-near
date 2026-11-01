@@ -1,16 +1,19 @@
 // Checks what the README claims, against testnet, without any keys. It only reads.
 //
-//   npm run verify
+//   npm run build && npm run verify
 //
-// 1. the plan contract has no access keys, so nobody can redeploy or change it
-// 2. the code running there is this repo's build (build first, see the README)
+// 1. the plan contract, market, launcher and quick-try coin have no access keys
+// 2. the code running on each is this repo's build (build first, see the README)
 // 3. the agent's only key can call request_release on the plan contract, nothing else
-// 4. every sealed plan pins the judge by hash, and the judge it points to really has that hash
-//    (and matches this repo's judge build, if you made one)
+// 4. sealed plans can only be judged through OutLayer, and every sealed plan pins a judge whose
+//    code really has that hash (and matches this repo's judge build, if you made one)
 // 5. every revealed plan's rules hash to the commitment it was made with
-// 6. every transaction in attack-log.md ended the way the log says
-// 7. with a NEAR AI key, the model the agent thinks with passes a fresh TEE attestation
-// 8. the market is locked, our build, lists only launcher coins, and every pool can pay its sellers
+// 6. every coin on the market came from the launcher, has no keys, runs the launcher's token and is
+//    bound to a plan that holds the coin for its creator
+// 7. the market contract can pay what it owes, and each pool can pay its sellers unless a dev's
+//    released tokens have come back into it
+// 8. every transaction in attack-log.md ended the way the log says
+// 9. with a NEAR AI key, the model the agent thinks with passes a fresh TEE attestation
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -33,13 +36,23 @@ const keys = async (account) => (await rpc.query({ request_type: 'view_access_ke
 
 console.log(`Checking ${S.plan} on NEAR testnet\n`);
 
+const callOn = async (account, method, args) => JSON.parse(Buffer.from((await rpc.query({ request_type: 'call_function', finality: 'final', account_id: account, method_name: method, args_base64: Buffer.from(JSON.stringify(args)).toString('base64') })).result).toString());
+const hashOf = (b) => bs58.encode(sha(b));
+
 // 1 and 2: locked, and the code is ours
-const planKeys = await keys(S.plan);
-check(planKeys.length === 0, 'the plan contract has no access keys', `${planKeys.length} keys on ${S.plan}`);
-const account = await rpc.query({ request_type: 'view_account', finality: 'final', account_id: S.plan });
-const wasm = local('target/wasm32-unknown-unknown/release/plan.wasm');
-if (wasm) check(account.code_hash === bs58.encode(sha(wasm)), 'the code on chain is this repo\'s build', `on chain ${account.code_hash}, local ${bs58.encode(sha(wasm))}`);
-else skip('the code on chain is this repo\'s build', `build the contracts first (on chain: ${account.code_hash})`);
+for (const [what, id, wasmName] of [['plan contract', S.plan, 'plan'], ['market', S.market, 'market'], ['launcher', S.launcher, 'launcher'], ['quick-try coin', S.coin, 'token']]) {
+  const k = await keys(id);
+  check(k.length === 0, `the ${what} has no access keys`, `${k.length} keys on ${id}`);
+  const acc = await rpc.query({ request_type: 'view_account', finality: 'final', account_id: id });
+  const w = local(`target/wasm32-unknown-unknown/release/${wasmName}.wasm`);
+  if (w) check(acc.code_hash === hashOf(w), `the ${what}'s code is this repo's build`, `on chain ${acc.code_hash}, local ${hashOf(w)}`);
+  else skip(`the ${what}'s code is this repo's build`, `run npm run build first (on chain: ${acc.code_hash})`);
+}
+const embedded = await callOn(S.launcher, 'token_hash', {});
+const tokenWasm = local('target/wasm32-unknown-unknown/release/token.wasm');
+if (tokenWasm) check(embedded === sha(tokenWasm).toString('hex'), 'the token the launcher deploys is this repo\'s token build', embedded);
+check((await callOn(S.plan, 'launcher', {})) === S.launcher && (await callOn(S.market, 'launcher', {})) === S.launcher, `the plan contract and the market take launches only from ${S.launcher}`);
+check((await callOn(S.launcher, 'market', {})) === S.market && (await callOn(S.launcher, 'plans', {})) === S.plan, 'the launcher sends every coin to this market and this plan contract');
 
 // 3: the agent's key
 const agentKeys = await keys(S.agent);
@@ -48,33 +61,37 @@ const scoped = agentKeys.length > 0 && agentKeys.every((k) => {
   return fc && fc.receiver_id === S.plan && fc.method_names.length === 1 && fc.method_names[0] === 'request_release';
 });
 check(scoped, 'the agent can only call request_release on the plan contract', agentKeys.map((k) => (k.access_key.permission === 'FullAccess' ? 'FULL ACCESS' : `${k.access_key.permission.FunctionCall.method_names} on ${k.access_key.permission.FunctionCall.receiver_id}`)).join('; '));
+check((await callOn(S.plan, 'outlayer', {})) === S.outlayer, `sealed plans can only be judged through ${S.outlayer}`);
 
-// the market: locked, our build, and every coin on it made by the launcher with no keys and our token code
-if (S.market) {
-  const mKeys = await keys(S.market);
-  check(mKeys.length === 0, 'the market contract has no access keys', `${mKeys.length} keys on ${S.market}`);
-  const mAcc = await rpc.query({ request_type: 'view_account', finality: 'final', account_id: S.market });
-  const mWasm = local('target/wasm32-unknown-unknown/release/market.wasm');
-  if (mWasm) check(mAcc.code_hash === bs58.encode(sha(mWasm)), 'the market\'s code is this repo\'s build', mAcc.code_hash);
-  const call = async (account, method, args) => JSON.parse(Buffer.from((await rpc.query({ request_type: 'call_function', finality: 'final', account_id: account, method_name: method, args_base64: Buffer.from(JSON.stringify(args)).toString('base64') })).result).toString());
-  check((await call(S.market, 'launcher', {})) === S.coins, `only coins made under ${S.coins} can list`);
-  const pools = await call(S.market, 'list_pools', { from: 0, limit: 200 });
-  const tokenWasm = local('target/wasm32-unknown-unknown/release/token.wasm');
-  const bad = [];
-  for (const p of pools) {
-    const k = await keys(p.token);
-    const code = (await rpc.query({ request_type: 'view_account', finality: 'final', account_id: p.token })).code_hash;
-    if (k.length || (tokenWasm && code !== bs58.encode(sha(tokenWasm)))) bad.push(p.token);
-  }
-  check(bad.length === 0, `every coin on the market has no keys and runs this repo's token code (${pools.length} checked)`, bad.length ? `not so: ${bad.join(', ')}` : '');
-  let solvent = 0;
-  for (const p of pools) {
-    const sold = BigInt(p.sale_supply) - BigInt(p.tokens_left);
-    const out = sold > 0n ? BigInt(await call(S.market, 'quote_sell', { token: p.token, amount: sold.toString() })) : 0n;
-    if (out <= BigInt(p.real_near)) solvent++;
-  }
-  check(solvent === pools.length, 'every pool holds enough NEAR to buy back every token it sold', `${solvent} of ${pools.length}`);
+// 6 and 7: every coin, and the money
+const pools = await callOn(S.market, 'list_pools', { from: 0, limit: 200 });
+const badCoins = [];
+let owed = 0n, shortOk = 0, shortBad = [];
+const devSold = [];
+for (const p of pools) {
+  const k = await keys(p.token);
+  const code = (await rpc.query({ request_type: 'view_account', finality: 'final', account_id: p.token })).code_hash;
+  const pl = await view('get_plan', { plan_id: p.plan });
+  const under = p.token.endsWith(`.${S.launcher}`) && !p.token.slice(0, -S.launcher.length - 1).includes('.');
+  if (k.length || code !== bs58.encode(Buffer.from(embedded, 'hex')) || !under || pl?.token !== p.token || pl?.beneficiary !== p.creator) badCoins.push(p.token);
+  owed += BigInt(p.real_near) + BigInt(p.fees_owed);
+  // what everyone but the dev holds from the curve, and what the curve itself would pay for it
+  const trades = await callOn(S.market, 'get_trades', { token: p.token, from: 0, limit: 5000 });
+  const held = new Map();
+  for (const t of trades) held.set(t.trader, (held.get(t.trader) ?? 0n) + (t.buy ? BigInt(t.tokens) : -BigInt(t.tokens)));
+  const sold = trades.some((t) => !t.buy && t.trader === p.creator);
+  let out = 0n;
+  for (const [, v] of held) if (v > 0n) out += v;
+  const curve = out > 0n ? BigInt(await callOn(S.market, 'curve_sell', { token: p.token, amount: out.toString() })) : 0n;
+  if (curve <= BigInt(p.real_near)) shortOk++;
+  else if (sold) devSold.push(p.token);
+  else shortBad.push(p.token);
 }
+check(badCoins.length === 0, `every coin on the market came from the launcher, has no keys, runs its token and is bound to its creator's plan (${pools.length} checked)`, badCoins.length ? `not so: ${badCoins.join(', ')}` : '');
+const market = await rpc.query({ request_type: 'view_account', finality: 'final', account_id: S.market });
+const free = BigInt(market.amount) - BigInt(market.storage_usage) * 10_000_000_000_000_000_000n;
+check(free >= owed, 'the market holds more NEAR, beyond its own storage, than all its pools and fees add up to', `free ${Number(free / 10n ** 21n) / 1000} NEAR, owed ${Number(owed / 10n ** 21n) / 1000} NEAR`);
+check(shortBad.length === 0, `every pool can pay what its buyers hold, at curve prices (${shortOk} can)`, devSold.length ? `${devSold.length} pool(s) fall short by design: the dev sold released tokens into them, which is paid from the pool and lowers what later sellers get. They are marked on the chart.` : '');
 
 // 4 and 5: every plan's judge and every reveal
 const plans = [];
@@ -110,15 +127,15 @@ const logFile = local('attack-log.json');
 if (logFile) {
   const run = JSON.parse(logFile);
   console.log(`\nattack log: plan #${run.plan} on ${run.contract}, ${run.at}`);
+  if (run.contract !== S.plan) check(false, 'the attack log is for the live plan contract', run.contract);
   let ok = 0;
   const wrong = [];
   for (const step of run.log.filter((l) => l.tx)) {
-    const tx = await rpc.txStatus(step.tx, step.who === 'stranger' ? S.fan : step.who === 'dev' ? S.dev : run.agent || S.agent, 'FINAL').catch(() => null)
-      ?? await rpc.sendJsonRpc('EXPERIMENTAL_tx_status', { tx_hash: step.tx, sender_account_id: S.agent, wait_until: 'FINAL' }).catch(() => null);
+    const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
     if (!tx) { wrong.push(`${step.n}: not found`); continue; }
     const failed = [tx.transaction_outcome, ...tx.receipts_outcome].some((o) => o.outcome.status?.Failure);
     const events = tx.receipts_outcome.flatMap((o) => o.outcome.logs).filter((l) => l.startsWith('EVENT_JSON:')).map((l) => JSON.parse(l.slice(11)).event);
-    const expect = /refused by the contract|refused:/.test(step.got) ? failed
+    const expect = /refused by the contract|^refused:/.test(step.got) ? failed
       : /^busted/.test(step.got) ? events.includes('busted')
       : /^released/.test(step.got) ? events.includes('released')
       : /returned false/.test(step.got) ? events.includes('reveal_checked')

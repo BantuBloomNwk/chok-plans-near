@@ -9,6 +9,7 @@
     "near-api-js": "5.1.1"
   },
   "scripts": {
+    "build": "./scripts/build.sh",
     "verify": "node scripts/verify.mjs",
     "attack": "node scripts/attack.mjs"
   }

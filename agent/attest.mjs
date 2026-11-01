@@ -6,7 +6,10 @@
 //   3. the quote's report_data must hold this TEE's signing address and our nonce, so the
 //      quote was made for us, now, and for the key that will sign the answers
 //   4. the GPU evidence goes to NVIDIA's attestation service, which must say yes for our nonce
-//   5. after a chat, the response signature must recover to that signing address and its
+//   5. the TDX event log replays to the quote's RTMR3, so the log is what really happened at boot
+//   6. the app's compose file hashes to the quote's MRCONFIGID and to the log's compose-hash event,
+//      so the containers in that file are the ones this enclave booted
+//   7. after a chat, the response signature must recover to that signing address and its
 //      hashes must match the exact bytes we sent and got back
 import crypto from 'crypto';
 import { ethers } from 'ethers';
@@ -44,6 +47,27 @@ export async function attest(model, key) {
     const rd = quote.subarray(568, 632).toString('hex');
     const bound = rd === who.slice(2).toLowerCase().padEnd(64, '0') + nonce;
     add(`${who} quote binds its signing key and our nonce`, bound, rd);
+
+    // RTMR3: each event extends it with sha384(rtmr3 || digest). dstack leaves the digest out of its
+    // own events, and it is sha384(type, little-endian || ":" || name || ":" || payload).
+    try {
+      const log = typeof a.event_log === 'string' ? JSON.parse(a.event_log) : a.event_log;
+      const digest = (e) => {
+        if (e.digest) return Buffer.from(e.digest, 'hex');
+        const t = Buffer.alloc(4); t.writeUInt32LE(e.event_type);
+        return crypto.createHash('sha384').update(Buffer.concat([t, Buffer.from(':'), Buffer.from(e.event || ''), Buffer.from(':'), Buffer.from(e.event_payload || '', 'hex')])).digest();
+      };
+      const events = log.filter((e) => e.imr === 3);
+      let rtmr3 = Buffer.alloc(48);
+      for (const e of events) rtmr3 = crypto.createHash('sha384').update(Buffer.concat([rtmr3, digest(e)])).digest();
+      add(`${who} the boot log replays to the quote's RTMR3`, rtmr3.equals(quote.subarray(520, 568)), `${events.length} events`);
+      const tcb = typeof a.info?.tcb_info === 'string' ? JSON.parse(a.info.tcb_info) : a.info?.tcb_info;
+      const composeHash = crypto.createHash('sha256').update(tcb.app_compose).digest('hex');
+      const mrConfig = quote.subarray(232, 280).toString('hex');
+      add(`${who} the compose file is the one this enclave booted`, mrConfig.startsWith(`01${composeHash}`) && events.find((e) => e.event === 'compose-hash')?.event_payload === composeHash, composeHash.slice(0, 16));
+    } catch (e) {
+      add(`${who} the boot log replays to the quote's RTMR3`, false, e.message);
+    }
 
     try {
       const body = typeof a.nvidia_payload === 'string' ? a.nvidia_payload : JSON.stringify(a.nvidia_payload);

@@ -1,6 +1,6 @@
 //! The sealed judge. It runs inside an OutLayer TEE worker. The dev's exact release rules reach it
-//! only as an encrypted secret that OutLayer decrypts inside the enclave; nobody else, not the
-//! agent and not CHOK, ever holds them. It reads one release request on stdin and prints one
+//! only as an encrypted secret that OutLayer decrypts inside the enclave, so the agent never holds
+//! them. In the playground our server holds the seed they come from. It reads one request and prints one
 //! verdict on stdout, plus the commitment of the rules it judged by, so the plan contract can
 //! check those were the rules committed when the plan was made. The rules themselves never leave.
 

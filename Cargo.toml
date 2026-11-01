@@ -1,5 +1,5 @@
 [workspace]
-members = ["contracts/plan", "contracts/token", "contracts/market"]
+members = ["contracts/plan", "contracts/token", "contracts/market", "contracts/launcher"]
 resolver = "2"
 
 [workspace.dependencies]

@@ -1,23 +1,31 @@
 {
   "root": "chokplans-mvxhykzp.testnet",
-  "plan": "sealed.chokplans-mvxhykzp.testnet",
-  "coin": "coin.chokplans-mvxhykzp.testnet",
   "dev": "dev.chokplans-mvxhykzp.testnet",
-  "agent": "sealagent.chokplans-mvxhykzp.testnet",
   "fan": "fan.chokplans-mvxhykzp.testnet",
-  "planDeployed": true,
-  "coinDeployed": true,
-  "agentKey": "ed25519:V4Zt3Yh9X4e55DcsHapb5f4NMTcWhs1Fk6pqEN7HG2y",
-  "legacyPlan": "locked.chokplans-mvxhykzp.testnet",
-  "legacyAgent": "quickagent.chokplans-mvxhykzp.testnet",
-  "planCodeHash": "6ab3YDYG5XQeKJyG7podjkfN2U7a3uj7SgkL3wnJvbeg",
-  "planLocked": true,
+  "plan": "book.chokplans-mvxhykzp.testnet",
+  "market": "bourse.chokplans-mvxhykzp.testnet",
+  "launcher": "launchpad.chokplans-mvxhykzp.testnet",
+  "coin": "busdog.chokplans-mvxhykzp.testnet",
+  "agent": "bookagent.chokplans-mvxhykzp.testnet",
+  "outlayer": "outlayer.testnet",
+  "judges": [
+    "7e694289acabfdada2048a79d98ddf0d844d853d3a3752a33ca84bcc14c95535"
+  ],
+  "codeHashes": {
+    "plan": "695evnDUBXy2coVmBGFcD2KRx8JTrCcinNdc8VvBjLkG",
+    "market": "BFTUBEnnsaowQWGGxLWvHMqBXAjWXqtByCKz8TZ1P9h3",
+    "launcher": "2P21AmWAuExWSWSzNBiyWCY2eRkGHA8amJoDwtnEACzM",
+    "coin": "Beb6ypReiqLR3jpTq1YARhEuy1bS8Hgo9BbCNn79BFPi"
+  },
   "retired": [
     "plans.chokplans-mvxhykzp.testnet",
-    "agent.chokplans-mvxhykzp.testnet"
-  ],
-  "coins": "coins.chokplans-mvxhykzp.testnet",
-  "market": "market.chokplans-mvxhykzp.testnet",
-  "lastMarketTest": "test-mvxrdnb1.coins.chokplans-mvxhykzp.testnet",
-  "marketLocked": true
+    "agent.chokplans-mvxhykzp.testnet",
+    "sealed.chokplans-mvxhykzp.testnet",
+    "market.chokplans-mvxhykzp.testnet",
+    "sealagent.chokplans-mvxhykzp.testnet",
+    "coin.chokplans-mvxhykzp.testnet",
+    "coins.chokplans-mvxhykzp.testnet",
+    "locked.chokplans-mvxhykzp.testnet",
+    "quickagent.chokplans-mvxhykzp.testnet"
+  ]
 }

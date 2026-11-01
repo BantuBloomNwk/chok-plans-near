@@ -12,26 +12,28 @@ This repo is CHOK on NEAR testnet. The live demo is at **https://chok-plans-near
 
 No wallet needed for steps 1 to 5.
 
-1. **Get a plan.** In "Quick try", press *Get a plan*. You get a sealed plan with 20M tokens inside, a public cap of 10M a minute, and secret rules nobody has told the agent. The commitment to those rules is shown on the card.
-2. **Try to dump it.** Type `dump everything`. The agent asks for all 20M. You'll see **BUSTED** (over the public cap), the cap drops to 8M, and the plan log gets a line with a link to the transaction.
-3. **Play by the rules, then break them.** Type `release 1M`. It's judged in the enclave and **RELEASED**. Type `release 1M` again straight away. **BUSTED**: too soon, by a sealed rule whose value you still can't see.
-4. **Check the agent.** Open *Under the hood* on any answer. You'll see the model's system prompt, every raw tool call and what the chain said back. You'll also see the TEE checks: Intel's quote, our nonce, NVIDIA's GPU evidence, and a signature on every answer that recovers to the attested key.
+1. **Get a plan.** In "Quick try", press *Get a plan*. You get a sealed plan with 20M tokens inside, a public cap of 10M a minute, a floor of 1M, and secret rules nobody has told the agent. The commitment to those rules is shown on the card, and your browser reads it from the plan on chain.
+2. **Try to dump it.** Press *Dump it all*, or type `dump everything`. You'll see **BUSTED**: over the public cap if the agent asks for all 20M, or by a sealed rule if it asks for less. Either way the cap drops to 8M, and the plan log gets a line.
+3. **Play by the rules, then break them.** Press *Release 1M, then 1M again*. The first is judged in the enclave and **RELEASED**. The second lands too soon and is **BUSTED**, by a sealed rule whose value you still can't see.
+4. **Check the agent.** Open *Verified* above the console for the contract and TEE checks. Open *Under the hood* on any answer for the model's system prompt, every raw tool call, what the chain said back and the signature on every answer.
 5. **Reveal.** Press *Reveal my plan's rules*. The rules come out, the contract hashes them against the commitment from step 1, and records them. Every verdict above now makes sense.
-6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. Each face on the chart is a trader. The one with the crown is the dev, and a `DEV` tag marks them in the trades and holders tables. Stamps along the top show what the plan did, and the card under it shows how much is still locked in the dev's plan. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
-7. **Be the dev.** Connect a wallet, launch your own coin to it, put 80% on sale in the market, and lock the rest in a plan. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder, and its only key is created by your own wallet.
-8. **Check us.** Run `npm run verify` (it uses no keys and only reads testnet) and `node scripts/attack.mjs`. The last attack run is in [`attack-log.md`](attack-log.md).
+6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. Each face on the chart is a trader, the one with the crown is the dev, and stamps along the top show what the plan did, read from the plan's own log on chain. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
+7. **Be the dev.** Connect a wallet, set your plan's terms and launch. One transaction makes the coin, puts 80% on sale and your 20% in the plan, so you never hold it loose. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder.
+8. **Check us.** Run the commands under [Running it yourself](#running-it-yourself). `npm run verify` needs no keys. `node scripts/attack.mjs --account you.testnet` attacks a plan from your own testnet account, and the last run is in [`attack-log.md`](attack-log.md).
 
 ## What's on testnet
 
 | Account | What it is |
 | --- | --- |
-| `sealed.chokplans-mvxhykzp.testnet` | The plan contract. **No access keys**, so nobody, us included, can redeploy or change it. |
-| `market.chokplans-mvxhykzp.testnet` | The market. **No access keys.** |
-| `coins.chokplans-mvxhykzp.testnet` | Makes coins and nothing else. Every coin is `<ticker>-<id>.coins.chokplans-mvxhykzp.testnet`, deployed with **no keys**. |
-| `sealagent.chokplans-mvxhykzp.testnet` | The quick-try agent. Its only key can call `request_release` on the plan contract. |
-| `coin.chokplans-mvxhykzp.testnet` | BUSDOG, the coin the quick-try plans hold. |
+| `book.chokplans-mvxhykzp.testnet` | The plan contract. **It has never had an access key**, so nobody, us included, can redeploy or change it. |
+| `bourse.chokplans-mvxhykzp.testnet` | The market. **Never had a key.** |
+| `launchpad.chokplans-mvxhykzp.testnet` | The launcher. **Never had a key.** It deploys one embedded token, and every coin is `<ticker>-<n>.launchpad.chokplans-mvxhykzp.testnet`, also with no keys. |
+| `bookagent.chokplans-mvxhykzp.testnet` | The quick-try agent. Its only key can call `request_release` on the plan contract. |
+| `busdog.chokplans-mvxhykzp.testnet` | BUSDOG, the coin the quick-try plans hold. **Never had a key.** |
 
-`npm run verify` checks every claim in that table against the chain. It also checks that the code on both contracts is this repo's build, that the judge every plan pins is the judge it gets, that every revealed plan matches its commitment, that every pool can pay all of its sellers, and that the model passes a fresh attestation. The last run: 17 passed, 0 failed.
+`npm run verify` checks every claim in that table against the chain, and that the code on each is this repo's build. It also checks that the judge every plan pins is the judge it gets, that every revealed plan matches its commitment, that every coin came from the launcher and is bound to its plan, that the market can pay what it owes, and that the model passes a fresh attestation.
+
+With no NEAR AI key and after `npm run build`, expect VERIFY_NO_KEY passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), VERIFY_WITH_KEY passed.
 
 ## How it works
 
@@ -39,14 +41,16 @@ No wallet needed for steps 1 to 5.
 
 - It **holds the dev's tokens.** Any NEP-141 token can go in.
 - It **lets them out under a public cap per period**, such as 20M a minute. The cap, the period, the penalty and the start time are set when the plan is made, and anyone can read them.
-- It **refuses anything more, on the record.** A request over the cap is still a successful transaction. It moves nothing, records a Busted stamp, and cuts the cap by the plan's penalty. Asking for too much makes the next request smaller.
+- It **refuses anything more, on the record.** A request over the cap is still a successful transaction. It moves nothing, records a Busted stamp, and cuts the cap by the plan's penalty, never past a floor set at launch. Asking for too much makes the next request smaller, but a holder gone bad can't freeze the bag for good.
+- It **keeps its own log on chain** (`get_log`): every release, every Busted and every change, paid for from the plan's budget. Nobody's server is involved in reading it.
+- **The beneficiary can replace the holder**, after the same public notice as a loosening. The new holder is under the same cap.
 - **The holder can never loosen it.** Only the beneficiary (the person the tokens go to) can propose a looser cap. It then waits out a public notice that they can cancel at any time. A plan can also be launched to never loosen at all, and the demo's plans are.
 
 ### Sealed rules
 
 A known selling schedule is easy to trade ahead of. A sealed plan adds secret rules on top of the public cap: the biggest single release, the earliest time anything can leave, and the minimum gap between releases.
 
-1. When the plan is made, the dev publishes a commitment: the sha256 of the rules plus a random salt.
+1. When the plan is made, the dev publishes a commitment: the sha256 of the rules plus a random salt. The plan also gets a budget, paid when it's made, that its judged requests draw on. Anyone can top it up with `fund_judge`.
 2. The rules live as an encrypted secret with [OutLayer](https://docs.near.org/primitives/off-chain-compute/outlayer), which only opens it inside an Intel TDX enclave, for one judge program pinned by its sha256, and only when the call comes through the plan contract.
 3. Each request goes to that judge. It answers cleared or refused, names the rule that refused (never its value), and sends back the hash of the rules it used.
 4. The plan releases only if that hash matches the commitment, the judge cleared it, and the public cap still allows it.
@@ -61,7 +65,9 @@ The agent thinks with a model on [NEAR AI Cloud](https://docs.near.ai/cloud) (`d
 - **The model is checked before it's trusted.** `agent/attest.mjs` asks for an attestation report with a fresh random nonce. It then checks:
   - Intel's signature on the TDX quote (with `@phala/dcap-qvl`);
   - that the quote's report data holds both the model's signing address and our nonce;
-  - that NVIDIA's attestation service accepts the GPU evidence for that same nonce.
+  - that NVIDIA's attestation service accepts the GPU evidence for that same nonce;
+  - that the TDX event log replays to the quote's RTMR3;
+  - that the app's compose file hashes to the quote's MRCONFIGID and the log's compose-hash event.
 - **Every answer is checked after.** The response signature must recover to the attested address, and its hashes must match the exact bytes we sent and got back.
 - If the model is down, a plain rule parser stands in, and the answer says so.
 
@@ -72,29 +78,34 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 - Buy with NEAR, and sell back for NEAR, any time.
 - Every trade carries a slippage limit: if the price moves past it before the trade lands, nothing happens.
 - 1% of each trade goes to the coin's creator, which they can claim at any time.
-- Selling out the whole curve raises 12 NEAR.
-- The NEAR in a pool only ever pays that coin's sellers. Rounding always favours the pool, so a pool can always buy back everything it sold, and `npm run verify` checks that for every pool.
-- Only coins made under `coins.chokplans-mvxhykzp.testnet` can list. That account exists only to make coins, so the market never has to trust anyone's token code.
+- Selling out the whole curve raises 12 NEAR. At that point the curve is simply closed to buyers: sellers can still sell back, and nothing moves to a DEX.
+- The last buyer pays only for the tokens that are left, and the rest of their NEAR comes back in the same transaction.
+- A pool only ever pays out NEAR its buyers put in. A dev's sells are paid from that pool too, and they lower what later sellers get, which is why they're marked on the chart and the tape. `npm run verify` checks that any pool that couldn't pay its sellers at curve prices is one a dev sold into, and that the contract as a whole can pay what it owes.
+- Every trade's storage is measured and charged exactly, and what wasn't used goes back to the trader.
 - Every trade is kept on the contract (`get_trades`). The chart and the tape need nobody's server.
 
-A coin launched in the playground puts 80% on sale and 20% (the dev's bag) in a sealed plan, launched to never loosen. The dev can only sell what that plan lets out.
+### The launcher
+
+`contracts/launcher` has no keys and embeds one token. One call to `launch` makes the coin in a new account with no keys, mints 800M straight to the market and 200M straight to the plan contract, makes the plan with the terms given, and lists the coin with that plan's id on the pool. The market and the plan contract accept these calls only from a direct sub-account of the launcher, and only the launcher can make those. So there is no way to list a coin without a plan, and no moment when a dev holds their share loose. The dev can only sell what that plan lets out.
 
 ## The four tracks
 
-**Security.** The agent is a policy engine bolted to one key. Its function-call key can call one method on one contract, can't attach a deposit, and can't move NEAR or add keys. A prompt-injected agent can only ask, and the plan answers. `scripts/attack.mjs` runs 14 attacks on a fresh plan: the agent paying a friend, loosening its own plan, faking the judge's verdict, the dev loosening a never-loosen plan, a stranger revealing made-up rules, and two prompt injections. All 14 held, and [`attack-log.md`](attack-log.md) links every transaction.
+**Security.** The agent is a policy engine bolted to one key. Its function-call key can call one method on one contract, can't attach a deposit, and can't move NEAR or add keys. A prompt-injected agent can only ask, and the plan answers. `scripts/attack.mjs` runs ATTACK_COUNT attacks from your own testnet account: the agent paying a friend, freezing its own plan, a stranger faking the judge's verdict or draining the contract through a fake OutLayer, a fake launch, the dev loosening a never-loosen plan, made-up rules, and two prompt injections. All ATTACK_COUNT held in our last run, and [`attack-log.md`](attack-log.md) links every transaction.
 
 **Privacy.** Two kinds of secrets stay secret while still giving public answers. The dev's selling rules are judged inside an OutLayer enclave and proven against a commitment. The agent's model runs in a NEAR AI TEE, and the page shows the attestation and signature checks on every answer. The server keeps no prompts and no replies after it answers. The only record it keeps is the plan log: what was asked, what the chain said, and the transaction.
 
-**Memecoins.** The mechanic lives in contracts, not in our backend. Every parameter is set at launch and readable on chain, and none of the contracts that matter has a key that could change it: not the coin, not the plan, not the market. The page shows each plan's state and a log of every release and Busted, and the market tape marks every dev trade.
+**Memecoins.** The mechanic lives in contracts, not in our backend. Every parameter is set at launch and readable on chain, and none of the contracts that matter has ever had a key that could change it: not the launcher, not any coin, not the plan, not the market. The launcher binds every coin to its plan in the transaction that makes it. The page shows each plan's state and its log of every release and Busted from the chain, the mints are NEP-141 events, and sells from the dev's own account are marked on the chart and the tape. A dev who sends released tokens to a second account first sells unmarked: nothing here can stop that.
 
 **Open.** The rules are in a readable contract. The beneficiary can cancel a pending loosening until its notice runs out. The demo's timers are in minutes and seconds, so you can watch them run out.
 
 ## When things go wrong
 
+- **A plan's budget runs out.** Sealed requests are refused, with no Busted and nothing moved, until anyone tops it up with `fund_judge`. Log lines are counted as skipped, and the events still go out.
 - **The judge doesn't answer, or crashes.** The plan records `judge_failed`, moves nothing, and stops waiting, so the next request can go in.
 - **The judge answers for the wrong rules or the wrong plan.** Its hash or plan id won't match, so the plan records `judge_mismatch` and moves nothing.
 - **Someone swaps the judge's code at its URL.** OutLayer checks the sha256 the plan pins and won't run it.
-- **The agent's gas allowance runs out.** Its function-call key stops working and the agent is locked out. It can't top itself up, because it can't do anything but call `request_release`. Its owner has to give it a new key. Nothing in the plan is at risk.
+- **The agent's gas allowance runs out.** Its function-call key stops working, and nobody can fix that: an account with only a function-call key can't add keys, and NEAR gives its parent account no power over it. The agent is dead. Nothing in the plan is at risk, and the beneficiary replaces the holder after the public notice.
+- **A holder is compromised.** It can ask for releases, which only ever go to the beneficiary, and each bad ask cuts the cap down to the floor and no further. The beneficiary replaces it after the public notice.
 - **The model is down, or fails attestation.** The agent won't use it. A plain rule parser takes over, and the answer says which one ran.
 - **The model is talked into something.** It can only ask the plan. Everything it asks for is judged like any other request.
 - **A buy's tokens can't be delivered.** The market puts the pool back as it was and refunds the buyer, from that pool only.
@@ -104,9 +115,10 @@ A coin launched in the playground puts 80% on sale and 20% (the dev's bag) in a 
 ## What it isn't, yet
 
 - It's on testnet only, and it hasn't been audited.
-- **The playground server holds keys** for the demo's dev account and the seed its sealed rules come from, so visitors can try a plan without a wallet. In "Be the dev", your own wallet signs everything and our server holds nothing of yours.
-- The judge's code is hosted on our server. The plan pins its sha256, so a swapped file is refused, but if that server is down, sealed requests fail and nothing moves.
-- The attestation checks cover Intel's quote signature, the nonce and key binding, NVIDIA's GPU evidence and every response signature. We don't yet replay the TDX event log (RTMR3) or check the app's compose hash, which NEAR's own verifier also does.
+- **The playground server holds keys** for the demo's dev account, the quick-try agent and the seed its sealed rules come from, all in one process, so visitors can try a plan without a wallet. It also knows every playground plan's sealed rules, which is why revealing is a button.
+- **In "Be the dev", your wallet signs your launch and your plan, unless it's short of NEAR and we pay. If you hire an agent, our server makes and keeps its key so it can act for you.** That key can only call `request_release` on the plan contract, and only you get the ticket to give it orders. The server keeps that ticket's hash.
+- The judge's code is hosted on our Netlify page. The plan pins its sha256, so a swapped file is refused, but if that page is down, sealed requests fail and nothing moves.
+- Our attestation checks don't yet cover Sigstore provenance for the containers or the gateway's TLS binding, which NEAR's own verifier also does.
 - The playground's limits (a few plans and coins per visitor an hour, and daily totals) slow down abuse. They're not sybil resistance. A real launch would need that, and this doesn't have it.
 - A plan controls only the tokens inside it. Anyone can still buy and sell the coin, and nothing here promises a price.
 
@@ -116,28 +128,22 @@ CHOK started on Solana, where the launchpad, its plans, its sealed schedules (on
 
 ## Running it yourself
 
-You need Rust 1.93 or later with the `wasm32-unknown-unknown` and `wasm32-wasip2` targets, and Node 20.
+You need Node 20 and exactly the Rust version in `rust-toolchain.toml`, 1.93.0, which rustup installs for you along with the `wasm32-unknown-unknown` and `wasm32-wasip2` targets. Another compiler builds different bytes, and verify will say the code doesn't match. `.cargo/config.toml` adds the flags, including the `--cfg near` that near-sdk needs.
 
 ```bash
-# the contracts (.cargo/config.toml adds the flags, including the --cfg near that near-sdk needs)
-cargo build --target wasm32-unknown-unknown --release
-cargo test -p plan -p market
-
-# the judge, and its tests
-cargo test --manifest-path judge/Cargo.toml
-cargo build --manifest-path judge/Cargo.toml --target wasm32-wasip2 --release
-
 npm install
-npm run verify                   # checks the live deployment, read-only
-node scripts/attack.mjs          # 14 attacks on a fresh plan, writes attack-log.md
-node scripts/market-e2e.mjs      # launch a coin, list it, buy, sell, claim fees
+npm run build                    # the token, then the contracts that embed it, then the judge
+cargo test -p plan -p market     # the contracts' unit tests
+cargo test --manifest-path judge/Cargo.toml
+node --test web/src/terminal/data.test.mjs
 
-# your own deployment: accounts, contracts, the agent's limited key
-node scripts/setup.mjs
-node scripts/deploy-locked.mjs <name> <agent name>
+npm run verify                   # checks the live deployment, read-only, with no keys
+
+# these need a funded testnet account of your own, in ~/.near-credentials/testnet
+node scripts/attack.mjs --account you.testnet --no-write   # every attack, against a plan of yours
 ```
 
-Sealed plans also need the OutLayer CLI logged in as the dev, the judge hosted at an https URL, and the rules seed stored as a secret bound to the judge's hash. Keys live in `~/.near-credentials`, outside the repo.
+`node scripts/market-e2e.mjs` runs a launch and the market end to end, and `node scripts/deploy-all.mjs` makes your own deployment; both use the dev and fan accounts named in `deployment.json`, so they're for your own deployment. Sealed plans also need the OutLayer CLI logged in as the dev, the judge at an https URL, and the rules seed stored as a secret bound to the judge's hash. Keys live in `~/.near-credentials`, outside the repo.
 
 ## Built with
 

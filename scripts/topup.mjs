@@ -9,7 +9,7 @@ const near = await connect({ networkId: 'testnet', nodeUrl: 'https://test.rpc.fa
 for (let i = 0; i < Number(process.argv[2] || 3); i++) {
   const id = `chokfill-${Date.now().toString(36)}${i}.testnet`;
   const kp = KeyPair.fromRandom('ed25519');
-  const res = await fetch('https://helper.testnet.near.org/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ newAccountId: id, newAccountPublicKey: kp.getPublicKey().toString() }) });
+  const res = await fetch('https://helper.nearprotocol.com/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ newAccountId: id, newAccountPublicKey: kp.getPublicKey().toString() }) });
   if (!res.ok) { console.log('faucet said', res.status); break; }
   await mem.setKey('testnet', id, kp);
   await new Promise((r) => setTimeout(r, 4000));

@@ -22,7 +22,7 @@ export const TOOLS = [
 ].map((f) => ({ type: 'function', function: f }));
 
 let cached = null;
-async function attestation(key) {
+export async function attestation(key) {
   // a fresh nonce every ten minutes is plenty for a demo; every answer is still signature-checked
   if (!cached || Date.now() - cached.at > 600_000) cached = { at: Date.now(), result: await attest(MODEL, key) };
   return cached.result;
