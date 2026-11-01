@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-/// The dev's sealed rules (the RULES secret, JSON).
+/// The sealed secret: either one plan's rules, or a master seed that gives every plan its own
+/// rules (the playground, where each visitor's plan must stay sealed when another is revealed).
+
+/// One plan's sealed rules.
 #[derive(Deserialize)]
 struct Rules {
     /// Biggest single release allowed, in the token's smallest unit.
@@ -45,6 +48,20 @@ pub fn commitment(max: &str, earliest: u64, gap: u64, salt: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A plan's own rules from the master seed: at most 2M to 4M per release and 20 to 40 seconds
+/// apart, open at once, with a salt only this plan uses. Anyone with the seed gets the same rules.
+pub fn derive(seed: &str, plan_id: u32) -> Rules {
+    let h = Sha256::digest(format!("chok-rules-v1|{seed}|{plan_id}").as_bytes());
+    let n = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as u64;
+    let tokens = 2_000_000 + n % 2_000_001;
+    let salt = hex(&Sha256::digest(format!("chok-salt-v1|{seed}|{plan_id}").as_bytes()));
+    Rules { max_per_release: (tokens as u128 * 1_000_000).to_string(), earliest: 0, min_gap_secs: 20 + (h[4] as u64) % 21, salt }
+}
+
 fn judge(rules: &Rules, req: &Request) -> Verdict {
     let amount: u128 = req.amount.parse().unwrap_or(u128::MAX);
     let max: u128 = rules.max_per_release.parse().unwrap_or(0);
@@ -64,7 +81,12 @@ fn main() {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).expect("stdin");
     let req: Request = serde_json::from_str(&input).expect("a release request");
-    let rules: Rules = serde_json::from_str(&std::env::var("RULES").expect("the sealed RULES secret")).expect("rules");
+    let raw = std::env::var("RULES").expect("the sealed RULES secret");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("rules");
+    let rules = match v.get("seed").and_then(|s| s.as_str()) {
+        Some(seed) => derive(seed, req.plan_id),
+        None => serde_json::from_value(v).expect("one plan's rules"),
+    };
     print!("{}", serde_json::to_string(&judge(&rules, &req)).unwrap());
 }
 
@@ -80,6 +102,14 @@ mod tests {
         assert_eq!(judge(&rules(), &req("10", 50, 0)).reason, "too early");
         assert_eq!(judge(&rules(), &req("10", 200, 180)).reason, "too soon after the last release");
         assert_eq!(judge(&rules(), &req("1001", 200, 0)).reason, "too large");
+    }
+    #[test]
+    fn each_plan_gets_its_own_rules_from_the_seed() {
+        let (a, b) = (derive("s", 1), derive("s", 2));
+        assert_ne!(commitment(&a.max_per_release, a.earliest, a.min_gap_secs, &a.salt), commitment(&b.max_per_release, b.earliest, b.min_gap_secs, &b.salt));
+        let m: u128 = a.max_per_release.parse().unwrap();
+        assert!((2_000_000_000_000..=4_000_000_000_000).contains(&m) && (20..=40).contains(&a.min_gap_secs));
+        assert_eq!(derive("s", 1).salt, a.salt);
     }
     #[test]
     fn the_commitment_binds_every_rule() {

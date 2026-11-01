@@ -322,6 +322,12 @@ impl Plans {
         event("loosen_applied", json!({ "plan": plan_id, "cap": p.cap }));
     }
 
+    /// The id the next plan will get (plans are never deleted), so a sealed plan's commitment can
+    /// be worked out for it before it is made.
+    pub fn next_plan_id(&self) -> u32 {
+        self.next_id
+    }
+
     pub fn get_plan(&self, plan_id: u32) -> Option<Plan> {
         self.plans.get(&plan_id).cloned()
     }
