@@ -16,7 +16,6 @@ import S from '../../deployment.json';
 import { makeRules, commitmentOf, storeSecretArgs, newProfile } from './seal.js';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
-const RPC = 'https://test.rpc.fastnear.com';
 const { plan: PLAN, coin: BUSDOG, launcher: LAUNCHER } = S;
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;
@@ -28,8 +27,7 @@ const explorer = (kind, id) => `https://testnet.nearblocks.io/${kind}/${id}`;
 const keep = { get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 async function rpc(method, params) {
-  const r = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
-  const j = await r.json();
+  const j = await window.nearRpc(method, params);
   if (j.error) throw new Error(j.error.cause?.name || j.error.message);
   return j.result;
 }
@@ -194,7 +192,11 @@ async function render() {
       return `<div class="chk"><span class="tick ${keys && keys.every((k) => k.access_key.permission !== 'FullAccess') ? 'ok' : ''}">✓</span><div><a class="mono" href="${explorer('address', a)}" target="_blank" rel="noreferrer">${esc(a)}</a><div class="muted small">${keys ? keys.length : 0} key(s): ${esc(desc)}</div></div></div>`;
     }));
     $('dev-agents').innerHTML = rows.join('') || '<p class="muted small">No agent yet.</p>';
-  } catch (e) { status(e.message, true); }
+  } catch (e) {
+    // this runs on a timer, and the next tick will catch up. Nothing to bother anyone with unless
+    // there's nothing on screen yet.
+    if (!plansShown) status(e.network ? 'Waiting for the network…' : e.message, !e.network);
+  }
 }
 
 // the holder: you, or a fresh account under yours whose only key can call request_release on the
@@ -343,7 +345,7 @@ async function onPlanClick(e) {
 }
 
 async function main() {
-  selector = await setupWalletSelector({ network: 'testnet', modules: [setupMeteorWallet(), setupHereWallet(), setupIntearWallet()] });
+  selector = await setupWalletSelector({ network: 'testnet', fallbackRpcUrls: ['https://test.rpc.fastnear.com', 'https://rpc.testnet.fastnear.com', 'https://near-testnet.drpc.org'], modules: [setupMeteorWallet(), setupHereWallet(), setupIntearWallet()] });
   modal = setupModal(selector, { contractId: PLAN });
   // ?as=account shows that account's plans read-only, for anyone checking what a dev did
   const viewAs = new URLSearchParams(location.search).get('as');
@@ -356,7 +358,7 @@ async function main() {
   $('dev-make').onclick = () => makePlan().catch((e) => status(e.message, true));
   $('dev-balances').onclick = (e) => { const b = e.target.closest('.d-open'); if (b) window.cpnMarketOpen?.(b.dataset.coin); };
   $('dev-plans').onclick = (e) => onPlanClick(e).catch((err) => status(err.message, true));
-  setInterval(() => me && render(), 8000);
+  setInterval(() => { if (me && !document.hidden) render(); }, 8000);
   // the notice counts down on screen, and the page redraws the moment an action becomes possible
   setInterval(() => {
     let due = false;

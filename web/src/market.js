@@ -8,21 +8,18 @@ import { renderHead, renderStats, renderTabs } from './terminal/panels.js';
 import { sampleMarket } from './terminal/sample.js';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
-const RPC = 'https://test.rpc.fastnear.com';
 const YOCTO = 10n ** 24n;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const acctLink = (a) => `https://testnet.nearblocks.io/address/${a}`;
 
 async function view(contract, method, args) {
-  const r = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'call_function', finality: 'optimistic', account_id: contract, method_name: method, args_base64: btoa(JSON.stringify(args)) } }) });
-  const j = await r.json();
+  const j = await window.nearRpc('query', { request_type: 'call_function', finality: 'optimistic', account_id: contract, method_name: method, args_base64: btoa(JSON.stringify(args)) });
   if (j.error || j.result?.error) throw new Error(j.error?.cause?.name || j.result.error);
   return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
 }
 async function nearBalance(account) {
-  const r = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'view_account', finality: 'optimistic', account_id: account } }) });
-  const j = await r.json();
+  const j = await window.nearRpc('query', { request_type: 'view_account', finality: 'optimistic', account_id: account });
   return BigInt(j.result?.amount ?? 0);
 }
 
@@ -117,7 +114,7 @@ async function detailOf(token, force) {
     if (force) await panel(p);
     return;
   }
-  chainKeys[token] ??= await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'view_access_key_list', finality: 'optimistic', account_id: token } }) }).then((r) => r.json()).then((j) => j.result?.keys?.length ?? null);
+  chainKeys[token] ??= await window.nearRpc('query', { request_type: 'view_access_key_list', finality: 'optimistic', account_id: token }).then((j) => j.result?.keys?.length ?? null);
   const trades = await view(MARKET, 'get_trades', { token, ...fromEnd(p.trades, 2000) });
   if (picked !== token) return;
   shownSig = sig;
@@ -217,7 +214,7 @@ async function quote() {
       const out = await view(MARKET, side === 'buy' ? 'quote_buy' : 'quote_sell', side === 'buy' ? { token: picked, deposit: amt.toString() } : { token: picked, amount: amt.toString() });
       $('mk-quote').innerHTML = side === 'buy' ? `You get about <b>${toks(out)}</b> $${esc(meta[picked].symbol)}` : `You get about <b>${near(out, 4)}</b> NEAR`;
       $('mk-quote').dataset.out = out;
-    } catch (e) { $('mk-quote').textContent = e.message; }
+    } catch (e) { $('mk-quote').textContent = e.network ? 'Waiting for the network…' : 'No price for that amount.'; }
   }, 250);
 }
 
@@ -227,14 +224,19 @@ async function trade() {
   const w = window.cpn;
   if (!w?.me) { w?.connect(); return; }
   const amt = amountRaw();
-  const out = BigInt($('mk-quote').dataset.out || '0');
-  if (!amt || !out) { say('Put in an amount first.', true); return; }
+  if (!amt) { say('Put in an amount first.', true); return; }
+  // quote now, for exactly this side and amount, not whatever the screen last showed
+  const buying = side === 'buy';
+  say('Getting the price…');
+  const out = BigInt(await view(MARKET, buying ? 'quote_buy' : 'quote_sell', buying ? { token: picked, deposit: amt.toString() } : { token: picked, amount: amt.toString() }));
+  if (!out) { say(buying ? 'That\'s too small to buy anything.' : 'That\'s too small to sell: it would be worth under about 0.003 NEAR.', true); return; }
   // 2% slippage: if the price moves more than that before your trade lands, nothing happens
   const min = (out * 98n / 100n).toString();
   const sym = meta[picked].symbol;
-  if (side === 'buy') await w.send([{ receiverId: MARKET, actions: [w.fc('buy', { token: picked, min_out: min }, 250, amt)] }], `Buying $${sym}`, say);
+  if (buying) await w.send([{ receiverId: MARKET, actions: [w.fc('buy', { token: picked, min_out: min }, 250, amt)] }], `Buying $${sym}`, say);
   else await w.send([{ receiverId: picked, actions: [w.fc('ft_transfer_call', { receiver_id: MARKET, amount: amt.toString(), msg: JSON.stringify({ sell: { min_out: min } }) }, 150, 1n)] }], `Selling $${sym}`, say);
   $('mk-amt').value = '';
+  $('mk-quote').textContent = '';
   shownSig = null;
   await refresh();
 }
@@ -267,7 +269,7 @@ $('mk-presets').onclick = (e) => {
   $('mk-amt').value = v.endsWith('%') ? Math.floor(Number(BigInt($('mk-bal').dataset.tokens || '0') / 1_000_000n) * parseInt(v) / 100) : v;
   quote();
 };
-$('mk-go').onclick = () => trade().catch(() => {});
+$('mk-go').onclick = () => trade().catch((e) => { if (e.network) say(e.message, true); });
 $('mk-bag').onclick = async (e) => {
   if (e.target.id === 'mk-topup') {
     if (!window.cpn?.me) { window.cpn?.connect(); return; }
@@ -282,7 +284,9 @@ $('mk-bag').onclick = async (e) => {
 window.addEventListener('cpn-wallet', () => detail(true).catch(() => {}));
 window.cpnMarketRefresh = refresh;
 window.cpnMarketOpen = (coin) => open(coin).catch(() => {});
-load().catch((e) => { $('mk-list').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+// a slow start tries again by itself rather than leaving an error on screen
+const start = () => load().catch(() => { $('mk-list').innerHTML = '<p class="muted">Waiting for the network…</p>'; setTimeout(start, 4000); });
+start();
 // close to live while someone is watching, and nothing while the tab is hidden
 setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 2_500);
 $('mk-jump')?.addEventListener('click', () => document.querySelector('.mk-trade')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
