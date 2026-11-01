@@ -35,15 +35,16 @@ export async function think({ key, text, readPlan, act, maxActions = 5 }) {
   const messages = [{ role: 'system', content: SYSTEM }, { role: 'user', content: String(text).slice(0, 600) }];
   const steps = [], answers = [];
   for (let round = 0; round < 6; round++) {
-    const requestBody = JSON.stringify({ model: MODEL, messages, tools: TOOLS, temperature: 0, max_tokens: 400 });
+    const requestBody = JSON.stringify({ model: MODEL, messages, tools: TOOLS, temperature: 0, max_tokens: 2500 });
     const r = await fetch(`${BASE}/v1/chat/completions`, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: requestBody });
     const responseText = await r.text();
     if (!r.ok) throw new Error(`NEAR AI ${r.status}: ${responseText.slice(0, 160)}`);
     const out = JSON.parse(responseText);
     answers.push({ chatId: out.id, ...(await checkAnswer({ model: MODEL, key, chatId: out.id, requestBody, responseText, signers: att.signers, gateway: att.gateway })) });
     const msg = out.choices[0].message;
+    if (process.env.BRAIN_DEBUG) console.error(JSON.stringify(out.choices[0]).slice(0, 800));
     messages.push({ role: 'assistant', content: msg.content ?? '', tool_calls: msg.tool_calls });
-    if (!msg.tool_calls?.length) return { model: MODEL, system: SYSTEM, steps, reply: msg.content ?? '', attestation: att, answers };
+    if (!msg.tool_calls?.length) return { model: MODEL, system: SYSTEM, steps, reply: msg.content || (out.choices[0].finish_reason === 'length' ? '(ran out of room to answer)' : ''), attestation: att, answers };
     for (const tc of msg.tool_calls) {
       let args = {};
       try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}

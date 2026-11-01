@@ -141,7 +141,7 @@ async function attempt(planId, coin, x, who = agent) {
   }
 }
 
-const planView = (p) => ({ balance: Number(BigInt(p.balance) / 1_000_000n), publicCapPerPeriod: Number(BigInt(p.cap) / 1_000_000n), periodSecs: Number(p.period_secs), releases: p.releases, busted: p.busted, sealed: !!p.sealed });
+const planView = (p) => ({ balance: Number(BigInt(p.balance) / 1_000_000n), publicCapPerPeriod: Number(BigInt(p.cap) / 1_000_000n), periodSecs: Number(BigInt(p.period_ns) / 1_000_000_000n), releasedThisPeriod: Number(BigInt(p.released_in_period) / 1_000_000n), releases: p.releases, busted: p.busted, sealed: !!p.sealed });
 
 // the model if we have one, the rule parser if not; either way every try goes through attempt()
 async function ask(planId, coin, text, who) {
