@@ -25,6 +25,15 @@ const JUDGE_DEPOSIT: NearToken = NearToken::from_millinear(50);
 const JUDGE_COST: NearToken = NearToken::from_millinear(5);
 /// Paid to ask for a new holder, for the few extra bytes that takes.
 const HOLDER_STORAGE: NearToken = NearToken::from_millinear(2);
+/// Nothing a plan stores can be bigger than these, so nobody can lock up the contract's balance.
+const MAX_SALT: usize = 128;
+const MAX_SHORT: usize = 128;
+const MAX_URL: usize = 256;
+/// Long enough for anything real, short enough that no time sum can overflow.
+const MAX_SECS: u64 = 315_360_000;
+const MAX_CAP: u128 = 1 << 100;
+/// After this many blocks (about ten minutes) with no verdict, anyone can clear a stuck request.
+const STUCK_BLOCKS: u64 = 600;
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -126,6 +135,9 @@ pub struct Plan {
     pub last_release: U64,
     /// A request out with the sealed judge, if any.
     pub awaiting: Option<U128>,
+    pub awaiting_since: U64,
+    /// Counts requests sent to the judge, so a verdict can only answer the one still waiting.
+    pub asks: u32,
     /// Set at launch and never changed: whether the cap can ever be loosened at all.
     pub loosen_allowed: bool,
     /// A sealed plan's rules once someone has revealed them and the contract checked them
@@ -214,11 +226,12 @@ fn release(plan: &mut Plan, plan_id: u32, by: &AccountId, amount: U128, now: u64
     plan.released_total = U128(plan.released_total.0 + amount.0);
     plan.balance = U128(plan.balance.0 - amount.0);
     plan.releases += 1;
+    let was = plan.last_release;
     plan.last_release = U64(now);
     event("released", json!({ "plan": plan_id, "by": by, "amount": amount, "to": plan.beneficiary, "released_in_period": plan.released_in_period, "cap": plan.cap }));
     let _ = Promise::new(plan.token.clone())
         .function_call("ft_transfer".to_string(), json!({ "receiver_id": plan.beneficiary, "amount": amount }).to_string().into_bytes(), NearToken::from_yoctonear(1), GAS_FT_TRANSFER)
-        .then(Promise::new(env::current_account_id()).function_call("on_released".to_string(), json!({ "plan_id": plan_id, "amount": amount }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_CALLBACK));
+        .then(Promise::new(env::current_account_id()).function_call("on_released".to_string(), json!({ "plan_id": plan_id, "amount": amount, "last_release": was }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_CALLBACK));
 }
 
 fn event(name: &str, data: near_sdk::serde_json::Value) {
@@ -234,14 +247,17 @@ impl Plans {
 
     /// What every plan must satisfy, however it was made, then the plan itself. Whatever was
     /// attached beyond its storage becomes the plan's budget.
-    fn make(&mut self, token: AccountId, beneficiary: AccountId, t: Terms, balance: u128) -> u32 {
+    fn make(&mut self, token: AccountId, beneficiary: AccountId, t: Terms, balance: u128, index: &[AccountId]) -> u32 {
         require!(t.cap.0 > 0, "the cap must be above zero");
         require!(t.min_cap.0 > 0 && t.min_cap.0 <= t.cap.0, "the cap's floor must be above zero and no more than the cap");
         require!(t.period_secs.0 > 0 && t.notice_secs.0 > 0, "periods and notice must be longer than zero");
         require!(t.penalty_bps <= MAX_PENALTY_BPS, "a Busted can tighten the cap by at most half");
+        require!(t.cap.0 <= MAX_CAP, "that cap is too big to work with");
+        require!(t.period_secs.0 <= MAX_SECS && t.notice_secs.0 <= MAX_SECS && t.start_in_secs.0 <= MAX_SECS, "periods, notice and start can be at most ten years");
         require!(t.holder != beneficiary || t.penalty_bps > 0, "a self-held plan needs a penalty");
         if let Some(sealed) = &t.sealed {
             require!(sealed.outlayer == self.outlayer, "a sealed plan can only be judged through OutLayer");
+            require!(sealed.commitment.len() <= MAX_SHORT && sealed.judge_hash.len() <= MAX_SHORT && sealed.secrets_profile.len() <= MAX_SHORT && sealed.judge_url.len() <= MAX_URL, "a sealed plan's text fields are too long");
         }
         let used_before = env::storage_usage();
         let now = env::block_timestamp();
@@ -255,11 +271,11 @@ impl Plans {
             not_before: U64(now + t.start_in_secs.0 * 1_000_000_000),
             notice_ns: U64(t.notice_secs.0 * 1_000_000_000),
             penalty_bps: t.penalty_bps, releases: 0, busted: 0, tightenings: 0, loosenings: 0, pending: None,
-            sealed: t.sealed, last_release: U64(0), awaiting: None, loosen_allowed: t.loosen_allowed, revealed: None,
+            sealed: t.sealed, last_release: U64(0), awaiting: None, awaiting_since: U64(0), asks: 0, loosen_allowed: t.loosen_allowed, revealed: None,
             pending_holder: None, budget: U128(0), log_len: 0, log_skipped: 0,
         };
         event("plan_created", json!({ "loosen_allowed": t.loosen_allowed, "plan": id, "token": plan.token, "holder": plan.holder, "beneficiary": plan.beneficiary, "cap": plan.cap, "min_cap": plan.min_cap, "period_secs": t.period_secs, "not_before": plan.not_before, "penalty_bps": t.penalty_bps, "sealed_commitment": plan.sealed.as_ref().map(|s| s.commitment.clone()), "judge_hash": plan.sealed.as_ref().map(|s| s.judge_hash.clone()) }));
-        for who in [plan.holder.clone(), plan.beneficiary.clone()] {
+        for who in index.iter().cloned() {
             let mut list = self.index.get(&who).cloned().unwrap_or_default();
             if !list.contains(&id) { list.push(id); }
             self.index.insert(who, list);
@@ -292,7 +308,10 @@ impl Plans {
         sealed: Option<Sealed>,
         loosen_allowed: bool,
     ) -> u32 {
-        self.make(token, beneficiary, Terms { holder, cap, min_cap, period_secs, start_in_secs, notice_secs, penalty_bps, sealed, loosen_allowed }, 0)
+        // a plan shows on an account's page only if that account made it, so nobody can fill someone
+        // else's page with plans naming them
+        let caller = env::predecessor_account_id();
+        self.make(token, beneficiary, Terms { holder, cap, min_cap, period_secs, start_in_secs, notice_secs, penalty_bps, sealed, loosen_allowed }, 0, &[caller])
     }
 
     /// A coin the launcher just made brings its plan with it: the dev's share was minted straight
@@ -304,7 +323,8 @@ impl Plans {
         let suffix = format!(".{}", self.launcher);
         let label = token.as_str().strip_suffix(&suffix).unwrap_or_else(|| env::panic_str("only coins made by the launcher"));
         require!(!label.is_empty() && !label.contains('.'), "only coins made by the launcher");
-        self.make(token, dev, terms, amount.0)
+        let holder = terms.holder.clone();
+        self.make(token, dev.clone(), terms, amount.0, &[dev, holder])
     }
 
     /// Anyone may add to a plan's budget, which pays for its judge and its log.
@@ -346,6 +366,9 @@ impl Plans {
             require!(plan.budget.0 >= JUDGE_COST.as_yoctonear(), "this plan's judge budget has run out; anyone can top it up with fund_judge");
             plan.budget = U128(plan.budget.0 - JUDGE_COST.as_yoctonear());
             plan.awaiting = Some(amount);
+            plan.awaiting_since = U64(env::block_height());
+            plan.asks += 1;
+            let ask = plan.asks;
             event("sent_to_judge", json!({ "plan": plan_id, "by": caller, "asked": amount, "judge_hash": sealed.judge_hash }));
             let input = json!({ "plan_id": plan_id, "amount": amount, "now_secs": now / 1_000_000_000, "last_release_secs": plan.last_release.0 / 1_000_000_000 }).to_string();
             let args = json!({
@@ -358,7 +381,7 @@ impl Plans {
             });
             let _ = Promise::new(sealed.outlayer)
                 .function_call("request_execution".to_string(), args.to_string().into_bytes(), JUDGE_DEPOSIT, GAS_JUDGE)
-                .then(Promise::new(env::current_account_id()).function_call("on_verdict".to_string(), json!({ "plan_id": plan_id, "amount": amount, "by": caller }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_VERDICT));
+                .then(Promise::new(env::current_account_id()).function_call("on_verdict".to_string(), json!({ "plan_id": plan_id, "amount": amount, "by": caller, "ask": ask }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_VERDICT));
             return true;
         }
         release(plan, plan_id, &caller, amount, now);
@@ -369,20 +392,30 @@ impl Plans {
     /// The sealed judge's verdict. It must carry the commitment the plan was made with, so the
     /// rules that judged it are the rules the dev committed to; the public cap is checked again.
     #[private]
-    pub fn on_verdict(&mut self, plan_id: u32, amount: U128, by: AccountId) {
+    pub fn on_verdict(&mut self, plan_id: u32, amount: U128, by: AccountId, ask: u32) {
         let now = env::block_timestamp();
         let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
+        // cleared as stuck and asked again since: this verdict answers a request nobody is waiting on
+        if plan.asks != ask || plan.awaiting.is_none() {
+            event("judge_late", json!({ "plan": plan_id, "asked": amount }));
+            return;
+        }
         plan.awaiting = None;
         let sealed = plan.sealed.clone().unwrap_or_else(|| env::panic_str("not a sealed plan"));
         let raw = match env::promise_result_checked(0, 4096) {
             Ok(bytes) => bytes,
-            Err(_) => { event("judge_failed", json!({ "plan": plan_id, "asked": amount })); return; }
+            Err(_) => {
+                event("judge_failed", json!({ "plan": plan_id, "asked": amount }));
+                note(&mut self.log, plan, plan_id, "judge_failed", Some(by), Some(amount), Some("the judge did not answer, so nothing moved"));
+                return;
+            }
         };
         // OutLayer returns the program's stdout; with Json it may arrive as an object or as a JSON string of one
         let mut v: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(&raw).unwrap_or(near_sdk::serde_json::Value::Null);
         if let Some(inner) = v.as_str().and_then(|s| near_sdk::serde_json::from_str(s).ok()) { v = inner; }
         if v.get("commitment").and_then(|c| c.as_str()) != Some(sealed.commitment.as_str()) || v.get("plan_id").and_then(|p| p.as_u64()) != Some(plan_id as u64) {
             event("judge_mismatch", json!({ "plan": plan_id, "asked": amount }));
+            note(&mut self.log, plan, plan_id, "judge_mismatch", Some(by), Some(amount), Some("the judge answered for other rules, so nothing moved"));
             return;
         }
         let cleared = v.get("cleared").and_then(|c| c.as_bool()).unwrap_or(false);
@@ -398,7 +431,11 @@ impl Plans {
             note(&mut self.log, plan, plan_id, "busted", Some(by), Some(amount), Some(reason));
             return;
         }
-        if amount.0 > plan.balance.0 { event("judge_failed", json!({ "plan": plan_id, "asked": amount, "why": "balance moved" })); return; }
+        if amount.0 > plan.balance.0 {
+            event("judge_failed", json!({ "plan": plan_id, "asked": amount, "why": "balance moved" }));
+            note(&mut self.log, plan, plan_id, "judge_failed", Some(by), Some(amount), Some("the plan's balance moved while the judge was deciding"));
+            return;
+        }
         if let Some(reason) = public_refusal(plan, amount.0, now) {
             bust(plan, plan_id, &by, amount, reason);
             note(&mut self.log, plan, plan_id, "busted", Some(by), Some(amount), Some(reason));
@@ -410,7 +447,7 @@ impl Plans {
 
     /// If the token transfer failed (say the beneficiary isn't registered), put everything back.
     #[private]
-    pub fn on_released(&mut self, plan_id: u32, amount: U128) {
+    pub fn on_released(&mut self, plan_id: u32, amount: U128, last_release: U64) {
         if env::promise_result_checked(0, 1024).is_ok() {
             return;
         }
@@ -419,8 +456,20 @@ impl Plans {
         plan.released_in_period = U128(plan.released_in_period.0.saturating_sub(amount.0));
         plan.released_total = U128(plan.released_total.0.saturating_sub(amount.0));
         plan.releases -= 1;
+        plan.last_release = last_release;
         event("release_reverted", json!({ "plan": plan_id, "amount": amount }));
         note(&mut self.log, plan, plan_id, "reverted", None, Some(amount), Some("the transfer failed, so the tokens went back in"));
+    }
+
+    /// The last-resort exit: if a verdict never came back, anyone can clear the wait after about ten
+    /// minutes, so a plan can't be stuck for good. A late verdict is then ignored.
+    pub fn clear_awaiting(&mut self, plan_id: u32) {
+        let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
+        let amount = plan.awaiting.unwrap_or_else(|| env::panic_str("nothing is waiting"));
+        require!(env::block_height() >= plan.awaiting_since.0 + STUCK_BLOCKS, "give the judge about ten minutes first");
+        plan.awaiting = None;
+        event("judge_cleared", json!({ "plan": plan_id, "asked": amount }));
+        note(&mut self.log, plan, plan_id, "judge_cleared", Some(env::predecessor_account_id()), Some(amount), Some("no verdict came back, so the wait was cleared"));
     }
 
     /// Tighten the cap, at once. The holder or the beneficiary may; it also drops any pending loosening.
@@ -443,7 +492,7 @@ impl Plans {
         let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
         require!(plan.loosen_allowed, "this plan was launched to never loosen");
         require!(caller == plan.beneficiary, "only the beneficiary can propose a loosening; the holder never can");
-        require!(cap.0 > plan.cap.0, "loosening means a larger cap");
+        require!(cap.0 > plan.cap.0 && cap.0 <= MAX_CAP, "loosening means a larger cap, within reason");
         let effective_at = U64(now + plan.notice_ns.0);
         plan.pending = Some(Pending { cap, effective_at });
         event("loosen_proposed", json!({ "plan": plan_id, "cap": cap, "effective_at": effective_at }));
@@ -519,6 +568,8 @@ impl Plans {
     /// Anyone may reveal a sealed plan's rules. The contract hashes them the same way the judge
     /// does and records them only if they match the commitment published when the plan was made.
     pub fn reveal(&mut self, plan_id: u32, max_per_release: U128, earliest: U64, min_gap_secs: U64, salt: String) -> bool {
+        require!(salt.len() <= MAX_SALT, "a salt can be at most 128 bytes");
+        let before = env::storage_usage();
         let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
         let sealed = plan.sealed.clone().unwrap_or_else(|| env::panic_str("not a sealed plan"));
         require!(plan.revealed.is_none(), "already revealed");
@@ -528,6 +579,12 @@ impl Plans {
         event("reveal_checked", json!({ "plan": plan_id, "matches": matches, "commitment": sealed.commitment, "hash": hash }));
         if matches {
             plan.revealed = Some(Revealed { max_per_release, earliest, min_gap_secs, salt, by: env::predecessor_account_id(), at: U64(env::block_timestamp()) });
+            // the plan grows, so its budget pays. A plan with nothing left can be funded first.
+            self.plans.flush();
+            let cost = env::storage_byte_cost().as_yoctonear() * (env::storage_usage().saturating_sub(before)) as u128;
+            let plan = self.plans.get_mut(&plan_id).unwrap();
+            require!(plan.budget.0 >= cost, "this plan's budget can't pay to store the reveal; anyone can top it up with fund_judge");
+            plan.budget = U128(plan.budget.0 - cost);
             event("revealed", json!({ "plan": plan_id, "max_per_release": max_per_release, "earliest": earliest, "min_gap_secs": min_gap_secs }));
             note(&mut self.log, plan, plan_id, "revealed", Some(env::predecessor_account_id()), None, None);
         }
@@ -658,6 +715,89 @@ mod tests {
         assert_eq!(c.get_plan(id).unwrap().revealed.unwrap().max_per_release.0, 300);
     }
 
+    #[test]
+    #[should_panic(expected = "a salt can be at most 128 bytes")]
+    fn a_huge_salt_cannot_lock_up_the_contract() {
+        let mut c = new_book();
+        let id = plan(&mut c, false, Some(sealed("outlayer.testnet")));
+        ctx("anyone.testnet", NearToken::from_yoctonear(0));
+        c.reveal(id, U128(1), U64(0), U64(0), "a".repeat(129));
+    }
+
+    #[test]
+    #[should_panic(expected = "text fields are too long")]
+    fn a_huge_judge_url_is_refused() {
+        let mut c = new_book();
+        let mut s = sealed("outlayer.testnet");
+        s.judge_url = "h".repeat(257);
+        plan(&mut c, false, Some(s));
+    }
+
+    #[test]
+    fn a_reveal_is_paid_for_by_its_plan() {
+        let text = "chok-sealed-v1|300|0|30|ab";
+        let commitment: String = env::sha256(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let mut s = sealed("outlayer.testnet");
+        s.commitment = commitment;
+        let mut c = new_book();
+        let id = plan(&mut c, false, Some(s));
+        let before = c.get_plan(id).unwrap().budget.0;
+        ctx("anyone.testnet", NearToken::from_yoctonear(0));
+        assert!(c.reveal(id, U128(300), U64(0), U64(30), "ab".into()));
+        assert!(c.get_plan(id).unwrap().budget.0 < before);
+    }
+
+    #[test]
+    #[should_panic(expected = "give the judge about ten minutes")]
+    fn a_wait_cannot_be_cleared_early() {
+        let mut c = new_book();
+        let id = plan(&mut c, false, Some(sealed("outlayer.testnet")));
+        ctx("agent.testnet", NearToken::from_yoctonear(0));
+        c.request_release(id, U128(1));
+        ctx("anyone.testnet", NearToken::from_yoctonear(0));
+        c.clear_awaiting(id);
+    }
+
+    #[test]
+    fn a_stuck_wait_can_be_cleared_and_a_late_verdict_does_nothing() {
+        let mut c = new_book();
+        let id = plan(&mut c, false, Some(sealed("outlayer.testnet")));
+        ctx("agent.testnet", NearToken::from_yoctonear(0));
+        c.request_release(id, U128(1));
+        assert!(c.get_plan(id).unwrap().awaiting.is_some());
+        testing_env!(VMContextBuilder::new().predecessor_account_id(acc("anyone.testnet")).block_height(10_000).build());
+        c.clear_awaiting(id);
+        assert!(c.get_plan(id).unwrap().awaiting.is_none());
+        testing_env!(VMContextBuilder::new().predecessor_account_id(acc("alice.testnet")).current_account_id(acc("alice.testnet")).build());
+        c.on_verdict(id, U128(1), acc("agent.testnet"), 1);
+        assert_eq!(c.get_plan(id).unwrap().releases, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "at most ten years")]
+    fn a_period_that_would_overflow_is_refused() {
+        let mut c = new_book();
+        ctx("dev.testnet", NearToken::from_near(1));
+        c.create_plan(acc("coin.testnet"), acc("a.testnet"), acc("dev.testnet"), U128(100), U128(10), U64(18_446_744_073), U64(0), U64(120), 2000, None, false);
+    }
+
+    #[test]
+    #[should_panic(expected = "too big")]
+    fn a_cap_that_would_overflow_is_refused() {
+        let mut c = new_book();
+        ctx("dev.testnet", NearToken::from_near(1));
+        c.create_plan(acc("coin.testnet"), acc("a.testnet"), acc("dev.testnet"), U128(u128::MAX), U128(10), U64(60), U64(0), U64(120), 2000, None, false);
+    }
+
+    #[test]
+    fn nobody_can_fill_someone_elses_page_with_plans() {
+        let mut c = new_book();
+        ctx("evil.testnet", NearToken::from_near(1));
+        c.create_plan(acc("coin.testnet"), acc("victim.testnet"), acc("victim.testnet"), U128(100), U128(10), U64(60), U64(0), U64(120), 2000, None, false);
+        assert_eq!(c.plans_of(acc("victim.testnet")).len(), 0);
+        assert_eq!(c.plans_of(acc("evil.testnet")).len(), 1);
+    }
+
     fn sealed(outlayer: &str) -> Sealed {
         Sealed { commitment: "c".into(), judge_url: "https://x".into(), judge_hash: "h".into(), outlayer: acc(outlayer), secrets_owner: acc("dev.testnet"), secrets_profile: "p".into() }
     }
@@ -731,7 +871,6 @@ mod tests {
         let p = c.get_plan(id).unwrap();
         assert_eq!(p.holder, acc("new.testnet"));
         assert_eq!(c.plans_of(acc("new.testnet")).len(), 1);
-        assert_eq!(c.plans_of(acc("agent.testnet")).len(), 0);
         assert_eq!(c.plans_of(acc("dev.testnet")).len(), 1);
     }
 

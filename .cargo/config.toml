@@ -2,6 +2,7 @@
 incompatible-rust-versions = "fallback"
 
 # near-sdk only talks to the NEAR host (readable panic messages, host hashing) when built with
-# `--cfg near`; cargo-near adds it, a plain cargo build does not
+# `--cfg near`; cargo-near adds it, a plain cargo build does not. scripts/build.sh uses the same flags
+# and adds path remapping, so the bytes don't depend on whose machine built them.
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "near", "-C", "link-arg=-s", "-C", "target-cpu=mvp"]

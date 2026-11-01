@@ -33,24 +33,28 @@ impl Token {
         let mut token = FungibleToken::new(Key::Token);
         token.internal_register_account(&owner);
         token.internal_deposit(&owner, total_supply.0);
+        FtMint { owner_id: &owner, amount: total_supply, memo: Some("the whole supply, once") }.emit();
         Self { token, name, symbol }
     }
 
     /// Made by the launcher in the same transaction that creates this account, which has no keys.
     #[init]
     #[allow(clippy::too_many_arguments)]
-    pub fn launch(name: String, symbol: String, total_supply: U128, sale: U128, dev: AccountId, market: AccountId, plans: AccountId, terms: Value, plan_deposit: U128, pool_deposit: U128) -> Self {
+    pub fn launch(name: String, symbol: String, total_supply: U128, sale: U128, dev: AccountId, market: AccountId, plans: AccountId, terms: Value, plan_deposit: U128, pool_deposit: U128, launcher: AccountId) -> Self {
         let bag = total_supply.0 - sale.0;
         let mut token = FungibleToken::new(Key::Token);
         token.internal_register_account(&market);
         token.internal_register_account(&plans);
+        // the dev has to be on the register to receive what the plan lets out
+        token.internal_register_account(&dev);
         token.internal_deposit(&market, sale.0);
         token.internal_deposit(&plans, bag);
         FtMint { owner_id: &market, amount: sale, memo: Some("the sale supply") }.emit();
         FtMint { owner_id: &plans, amount: U128(bag), memo: Some("the dev's share, in its plan") }.emit();
         let _ = Promise::new(plans)
             .function_call("create_launched", json!({ "dev": dev, "terms": terms, "amount": U128(bag) }).to_string().into_bytes(), NearToken::from_yoctonear(plan_deposit.0), Gas::from_tgas(30))
-            .then(Promise::new(market).function_call("list_launched", json!({ "creator": dev, "sale": sale }).to_string().into_bytes(), NearToken::from_yoctonear(pool_deposit.0), Gas::from_tgas(30)));
+            .then(Promise::new(market).function_call("list_launched", json!({ "creator": dev, "sale": sale }).to_string().into_bytes(), NearToken::from_yoctonear(pool_deposit.0), Gas::from_tgas(25)))
+            .then(Promise::new(launcher).function_call("confirm", json!({}).to_string().into_bytes(), NearToken::from_yoctonear(0), Gas::from_tgas(8)));
         Self { token, name, symbol }
     }
 }

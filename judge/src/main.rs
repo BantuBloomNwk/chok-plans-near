@@ -22,6 +22,10 @@ struct Rules {
     min_gap_secs: u64,
     /// 32 random bytes, hex, so the commitment can't be guessed from likely rules.
     salt: String,
+    /// Which plan these rules are for. Without it, anyone could make a plan pointing at the same
+    /// secret and probe the rules from there, with nothing to lose.
+    #[serde(default)]
+    plan_id: Option<u32>,
 }
 
 /// What the plan contract sends.
@@ -54,12 +58,12 @@ fn hex(bytes: &[u8]) -> String {
 
 /// A plan's own rules from the master seed: at most 2M to 4M per release and 20 to 40 seconds
 /// apart, open at once, with a salt only this plan uses. Anyone with the seed gets the same rules.
-pub fn derive(seed: &str, plan_id: u32) -> Rules {
+fn derive(seed: &str, plan_id: u32) -> Rules {
     let h = Sha256::digest(format!("chok-rules-v1|{seed}|{plan_id}").as_bytes());
     let n = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as u64;
     let tokens = 2_000_000 + n % 2_000_001;
     let salt = hex(&Sha256::digest(format!("chok-salt-v1|{seed}|{plan_id}").as_bytes()));
-    Rules { max_per_release: (tokens as u128 * 1_000_000).to_string(), earliest: 0, min_gap_secs: 20 + (h[4] as u64) % 21, salt }
+    Rules { max_per_release: (tokens as u128 * 1_000_000).to_string(), earliest: 0, min_gap_secs: 20 + (h[4] as u64) % 21, salt, plan_id: Some(plan_id) }
 }
 
 fn judge(rules: &Rules, req: &Request) -> Verdict {
@@ -87,13 +91,14 @@ fn main() {
         Some(seed) => derive(seed, req.plan_id),
         None => serde_json::from_value(v).expect("one plan's rules"),
     };
+    assert_eq!(rules.plan_id, Some(req.plan_id), "these rules are for another plan");
     print!("{}", serde_json::to_string(&judge(&rules, &req)).unwrap());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn rules() -> Rules { Rules { max_per_release: "1000".into(), earliest: 100, min_gap_secs: 60, salt: "ab".into() } }
+    fn rules() -> Rules { Rules { max_per_release: "1000".into(), earliest: 100, min_gap_secs: 60, salt: "ab".into(), plan_id: Some(7) } }
     fn req(amount: &str, now: u64, last: u64) -> Request { Request { plan_id: 7, amount: amount.into(), now_secs: now, last_release_secs: last } }
     #[test]
     fn clears_inside_the_rules() { assert!(judge(&rules(), &req("1000", 200, 0)).cleared); }

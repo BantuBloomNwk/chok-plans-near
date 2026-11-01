@@ -32,6 +32,7 @@ const TOKEN_STORAGE: NearToken = NearToken::from_micronear(1_250);
 const GAS_STORAGE: Gas = Gas::from_tgas(10);
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_CALLBACK: Gas = Gas::from_tgas(15);
+const MIN_BUY: NearToken = NearToken::from_micronear(7_500);
 const GAS_CHECK: Gas = Gas::from_tgas(5);
 const GAS_ROUTE: Gas = Gas::from_tgas(60);
 
@@ -146,7 +147,8 @@ impl Market {
         let buyer = env::predecessor_account_id();
         let paid = env::attached_deposit().as_yoctonear();
         let overhead = TRADE_STORAGE.as_yoctonear() + TOKEN_STORAGE.as_yoctonear();
-        require!(paid > overhead + MICRO * 1_000, "attach at least 0.0048 NEAR");
+        // under this a buyer's tokens would be worth too little to ever sell back
+        require!(paid >= MIN_BUY.as_yoctonear(), "attach at least 0.0075 NEAR");
         let pool = self.pools.get_mut(&token).unwrap_or_else(|| env::panic_str("that coin is not listed"));
         require!(pool.tokens_left.0 > 0, "this coin's curve has sold out");
         let net = paid - overhead;
@@ -159,7 +161,7 @@ impl Market {
             let need = (x_m(pool) * t).div_ceil(y(pool) - t).min(in_m);
             let into = need * MICRO;
             let fee = (into * FEE_BPS).div_ceil(10_000 - FEE_BPS);
-            (t, into, fee, net - into - fee)
+            (t, into, fee, net.saturating_sub(into + fee))
         } else {
             let into = in_m * MICRO;
             // the fee plus the rounding dust; the curve only counts whole micro-NEAR
@@ -188,9 +190,10 @@ impl Market {
         chain.then(Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_bought(token, buyer, out, into_pool, fee, U128(back)))
     }
 
-    /// The tokens reached the buyer: record the trade and give back what wasn't needed. They
-    /// didn't: put the pool back and refund, from this pool only, so a failed buy can never reach
-    /// another coin's NEAR.
+    /// The tokens reached the buyer: record the trade and give back what wasn't needed. They didn't:
+    /// the buyer sells them back at the curve as it is now, with no fee. Others may have traded since
+    /// the buy, so rewinding by subtraction would break the curve; this way any trade in between costs
+    /// the failed buyer and never the pool, and it can never reach another coin's NEAR.
     #[private]
     pub fn on_bought(&mut self, token: AccountId, buyer: AccountId, out: U128, into_pool: U128, fee: U128, back: U128, #[callback_result] sent: Result<(), PromiseError>) -> bool {
         if sent.is_ok() {
@@ -200,7 +203,7 @@ impl Market {
             return true;
         }
         let pool = self.pools.get_mut(&token).unwrap();
-        let from_pool = into_pool.0.min(pool.real_near.0);
+        let from_pool = (sell_out(pool, out.0) * MICRO).min(pool.real_near.0).min(into_pool.0);
         let from_fees = fee.0.min(pool.fees_owed.0);
         pool.tokens_left = U128(pool.tokens_left.0 + out.0);
         pool.real_near = U128(pool.real_near.0 - from_pool);
@@ -212,14 +215,16 @@ impl Market {
     /// The launch itself, from a coin the launcher just made: the sale supply was minted straight
     /// here, and the coin's plan was made a moment before. No plan, no listing.
     #[payable]
-    pub fn list_launched(&mut self, creator: AccountId, sale: U128, #[callback_result] plan: Result<u32, PromiseError>) -> bool {
+    pub fn list_launched(&mut self, creator: AccountId, sale: U128) -> bool {
         let token = env::predecessor_account_id();
         let suffix = format!(".{}", self.launcher);
         let label = token.as_str().strip_suffix(&suffix).unwrap_or_else(|| env::panic_str("only coins made by the launcher can be listed"));
         require!(!label.is_empty() && !label.contains('.'), "only coins made by the launcher can be listed");
         require!(!self.pools.contains_key(&token), "already listed");
         require!(sale.0 >= 1_000_000, "list at least one whole token");
-        let plan = plan.unwrap_or_else(|_| env::panic_str("a coin with no plan cannot list"));
+        require!(env::promise_results_count() == 1, "a coin with no plan cannot list");
+        let bytes = env::promise_result_checked(0, 64).unwrap_or_else(|_| env::panic_str("a coin with no plan cannot list"));
+        let plan: u32 = serde_json::from_slice(&bytes).unwrap_or_else(|_| env::panic_str("a coin with no plan cannot list"));
         let before = env::storage_usage();
         let pool = Pool { creator: creator.clone(), plan, sale_supply: sale, tokens_left: sale, virtual_tokens: U128(sale.0 / VIRTUAL_TOKEN_DIV), real_near: U128(0), fees_owed: U128(0), volume_near: U128(0), trades: 0, listed_at: U64(env::block_timestamp_ms()) };
         log!("EVENT_JSON:{}", json!({ "standard": "chok-market", "version": "1.0.0", "event": "listed", "data": [{ "token": token, "creator": creator, "plan": plan, "sale_supply": sale, "price": U128(price(&pool)) }] }));
@@ -315,7 +320,7 @@ impl Market {
 mod tests {
     use super::*;
     use near_sdk::test_utils::VMContextBuilder;
-    use near_sdk::testing_env;
+    use near_sdk::{testing_env, PromiseResult};
 
     fn ctx(pred: &str, deposit: u128) {
         testing_env!(VMContextBuilder::new().current_account_id("market.root.testnet".parse().unwrap()).predecessor_account_id(pred.parse().unwrap()).attached_deposit(NearToken::from_yoctonear(deposit)).build());
@@ -323,11 +328,105 @@ mod tests {
     const T: u128 = 1_000_000;
     const NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 
+    fn with_plan(pred: &str, plan: Option<u32>) {
+        let ctx = VMContextBuilder::new().current_account_id("market.root.testnet".parse().unwrap()).predecessor_account_id(pred.parse().unwrap()).attached_deposit(NearToken::from_millinear(50)).build();
+        let result = match plan { Some(n) => PromiseResult::Successful(n.to_string().into_bytes()), None => PromiseResult::Failed };
+        testing_env!(ctx, near_sdk::test_vm_config(), near_sdk::RuntimeFeesConfig::test(), Default::default(), vec![result]);
+    }
+
     fn listed() -> Market {
+        // a fresh chain each time, so one test can compare several runs
+        ctx("x.testnet", 0);
+        near_sdk::mock::with_mocked_blockchain(|b| { b.take_storage(); });
         let mut m = Market::new("root.testnet".parse().unwrap());
-        testing_env!(VMContextBuilder::new().current_account_id("market.root.testnet".parse().unwrap()).predecessor_account_id("coin.root.testnet".parse().unwrap()).attached_deposit(NearToken::from_millinear(50)).build());
-        m.list_launched("dev.root.testnet".parse().unwrap(), U128(800_000_000 * T), Ok(4));
+        with_plan("coin.root.testnet", Some(4));
+        m.list_launched("dev.root.testnet".parse().unwrap(), U128(800_000_000 * T));
         m
+    }
+
+    fn acct(s: &str) -> AccountId { s.parse().unwrap() }
+    const COIN: &str = "coin.root.testnet";
+    fn k(m: &Market) -> u128 { let p = m.pools.get(&acct(COIN)).unwrap(); x_m(p) * y(p) }
+
+    /// What the pool took and gave for one buy: tokens out, NEAR in, fee.
+    fn buy(m: &mut Market, who: &str, near: u128) -> (u128, u128, u128) {
+        let before = m.pools.get(&acct(COIN)).unwrap().clone();
+        ctx(who, near);
+        let _ = m.buy(acct(COIN), U128(0));
+        let p = m.pools.get(&acct(COIN)).unwrap();
+        (before.tokens_left.0 - p.tokens_left.0, p.real_near.0 - before.real_near.0, p.fees_owed.0 - before.fees_owed.0)
+    }
+
+    /// Round 5's drain: H buys, a victim buys, P buys, H sells into P's price while P's buy is in
+    /// flight, then P's transfer fails. Returns what H and P made together, and what the victim can
+    /// now sell for.
+    fn drain(h_in: u128, victim_in: u128, p_in: u128) -> (i128, u128, u128) {
+        let mut m = listed();
+        let k0 = k(&m);
+        let (h_tokens, _, _) = buy(&mut m, "h.testnet", h_in);
+        let (v_tokens, _, _) = buy(&mut m, "victim.testnet", victim_in);
+        let (p_tokens, p_into, p_fee) = buy(&mut m, "p.testnet", p_in);
+        let h_got = m.quote_sell(acct(COIN), U128(h_tokens)).0;
+        ctx(COIN, 0);
+        m.ft_on_transfer(acct("h.testnet"), U128(h_tokens), r#"{"sell":{"min_out":"0"}}"#.into());
+        let before = m.pools.get(&acct(COIN)).unwrap().clone();
+        ctx("market.root.testnet", 0);
+        m.on_bought(acct(COIN), acct("p.testnet"), U128(p_tokens), U128(p_into), U128(p_fee), U128(0), Err(PromiseError::Failed));
+        let after = m.pools.get(&acct(COIN)).unwrap().clone();
+        let p_back = (before.real_near.0 - after.real_near.0) + (before.fees_owed.0 - after.fees_owed.0);
+        assert!(k(&m) + MICRO * T >= k0, "the curve's product fell: {} from {k0}", k(&m));
+        let net = h_got as i128 + p_back as i128 - h_in as i128 - p_into as i128 - p_fee as i128;
+        (net, m.quote_sell(acct(COIN), U128(v_tokens)).0, victim_in)
+    }
+
+    /// The same trades with no failed buy: H earns what buying before someone else always earns.
+    fn fair(h_in: u128, victim_in: u128) -> (i128, u128) {
+        let mut m = listed();
+        let (h_tokens, _, _) = buy(&mut m, "h.testnet", h_in);
+        let (v_tokens, _, _) = buy(&mut m, "victim.testnet", victim_in);
+        let h_got = m.quote_sell(acct(COIN), U128(h_tokens)).0;
+        ctx(COIN, 0);
+        m.ft_on_transfer(acct("h.testnet"), U128(h_tokens), r#"{"sell":{"min_out":"0"}}"#.into());
+        (h_got as i128 - h_in as i128, m.quote_sell(acct(COIN), U128(v_tokens)).0)
+    }
+
+    #[test]
+    fn a_failed_buy_cannot_drain_a_pool() {
+        // the scenarios from the review, where the attacker used to take up to 4 NEAR out of the victim.
+        // With the failed buy, H and P together must do no better than H alone, and the victim no worse
+        for (h, v, p) in [(1, 3, 2), (1, 3, 1), (1, 6, 3), (1, 1, 8)] {
+            let (net, victim_can_get, _) = drain(h * NEAR, v * NEAR, p * NEAR);
+            let (fair_net, fair_victim) = fair(h * NEAR, v * NEAR);
+            let dust = 10 * MICRO as i128;
+            assert!(net <= fair_net + dust, "{h}/{v}/{p}: attacker made {net}, buying first is worth {fair_net}");
+            assert!(victim_can_get as i128 >= fair_victim as i128 - dust, "{h}/{v}/{p}: victim can get {victim_can_get}, fair is {fair_victim}");
+        }
+    }
+
+    #[test]
+    fn a_failed_buy_with_nothing_in_between_refunds_nearly_everything() {
+        let mut m = listed();
+        let (t, into, fee) = buy(&mut m, "p.testnet", NEAR);
+        ctx("market.root.testnet", 0);
+        m.on_bought(acct(COIN), acct("p.testnet"), U128(t), U128(into), U128(fee), U128(0), Err(PromiseError::Failed));
+        let p = m.pools.get(&acct(COIN)).unwrap();
+        assert_eq!(p.tokens_left, p.sale_supply);
+        assert!(p.real_near.0 < MICRO * 2, "the pool kept {}", p.real_near.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "attach at least 0.0075 NEAR")]
+    fn a_buy_too_small_to_ever_sell_is_refused() {
+        let mut m = listed();
+        ctx("fan.testnet", NearToken::from_micronear(7_499).as_yoctonear());
+        let _ = m.buy(acct(COIN), U128(0));
+    }
+
+    #[test]
+    fn the_smallest_buy_can_be_sold_back() {
+        let mut m = listed();
+        let (t, _, _) = buy(&mut m, "fan.testnet", MIN_BUY.as_yoctonear());
+        assert!(m.quote_sell(acct(COIN), U128(t)).0 > 0);
     }
 
     #[test]
@@ -364,25 +463,33 @@ mod tests {
     #[test]
     #[should_panic(expected = "only coins made by the launcher can be listed")]
     fn outside_coins_cannot_list() {
-        ctx("evil.testnet", NEAR);
         let mut m = Market::new("root.testnet".parse().unwrap());
-        m.list_launched("evil.testnet".parse().unwrap(), U128(T), Ok(0));
+        with_plan("evil.testnet", Some(0));
+        m.list_launched("evil.testnet".parse().unwrap(), U128(T));
     }
 
     #[test]
     #[should_panic(expected = "only coins made by the launcher can be listed")]
     fn nested_accounts_cannot_list() {
-        ctx("x.coin.root.testnet", NEAR);
         let mut m = Market::new("root.testnet".parse().unwrap());
-        m.list_launched("dev.testnet".parse().unwrap(), U128(T), Ok(0));
+        with_plan("x.coin.root.testnet", Some(0));
+        m.list_launched("dev.testnet".parse().unwrap(), U128(T));
+    }
+
+    #[test]
+    #[should_panic(expected = "only coins made by the launcher can be listed")]
+    fn a_direct_call_stops_at_the_launcher_check() {
+        ctx("stranger.testnet", NEAR);
+        let mut m = Market::new("root.testnet".parse().unwrap());
+        m.list_launched("stranger.testnet".parse().unwrap(), U128(T));
     }
 
     #[test]
     #[should_panic(expected = "a coin with no plan cannot list")]
     fn no_plan_no_listing() {
-        ctx("coin.root.testnet", NEAR);
         let mut m = Market::new("root.testnet".parse().unwrap());
-        m.list_launched("dev.testnet".parse().unwrap(), U128(T), Err(PromiseError::Failed));
+        with_plan("coin.root.testnet", None);
+        m.list_launched("dev.testnet".parse().unwrap(), U128(T));
     }
 
     #[test]
