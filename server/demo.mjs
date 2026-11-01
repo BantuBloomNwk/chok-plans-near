@@ -12,6 +12,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { connect, keyStores, KeyPair, utils } from 'near-api-js';
+import { think, MODEL } from '../agent/brain.mjs';
 
 const RPC = 'https://test.rpc.fastnear.com';
 const S = JSON.parse(fs.readFileSync(new URL('../deployment.json', import.meta.url)));
@@ -31,6 +32,9 @@ await agentStore.setKey('testnet', S.agent, await files.getKey('testnet-agent', 
 const agent = await (await connect({ networkId: 'testnet', nodeUrl: RPC, keyStore: agentStore })).account(S.agent);
 const dev = await near.account(S.dev);
 const root = await near.account(S.root);
+// the model key is optional: without it (or if NEAR AI is down) the agent falls back to a plain rule parser
+const AI_KEY = (() => { try { return fs.readFileSync(process.env.AI_KEY_FILE || path.join(os.homedir(), '.near-ai-key'), 'utf8').trim(); } catch { return ''; } })();
+let brainLive = false; // true once the model has actually answered since the server started
 const TOKEN_WASM = fs.readFileSync(new URL('../target/wasm32-unknown-unknown/release/token.wasm', import.meta.url));
 
 const tokens = (n) => (BigInt(Math.round(n)) * 1_000_000n).toString();
@@ -106,13 +110,14 @@ async function attempt(planId, coin, x, who = agent) {
   const t0 = Date.now();
   try {
     if (x.kind === 'transfer') {
-      const out = await call(who, coin, 'ft_transfer', { receiver_id: x.to, amount: tokens(1_000_000) });
+      const out = await call(who, coin, 'ft_transfer', { receiver_id: x.to, amount: tokens(x.amount || 1_000_000) });
       return { ...x, outcome: 'went through', tx: out.transaction.hash };
     }
     if (x.kind === 'loosen') {
-      const out = await call(who, S.plan, 'propose_loosen', { plan_id: planId, cap: tokens(1_000_000_000) });
+      const out = await call(who, S.plan, 'propose_loosen', { plan_id: planId, cap: tokens(x.cap || 1_000_000_000) });
       return { ...x, outcome: 'went through', tx: out.transaction.hash };
     }
+    if (!(x.amount >= 1)) return { ...x, outcome: 'not tried', why: 'amount must be at least 1 token' };
     const before = await view(S.plan, 'get_plan', { plan_id: planId });
     const out = await call(who, S.plan, 'request_release', { plan_id: planId, amount: tokens(x.amount) });
     let p = await view(S.plan, 'get_plan', { plan_id: planId });
@@ -134,6 +139,33 @@ async function attempt(planId, coin, x, who = agent) {
     const kind = String(e.type || e.message || '').match(/MethodNameMismatch|ReceiverMismatch|NotEnoughAllowance|[A-Z][A-Za-z]+Mismatch/)?.[0] || String(e.type || 'refused');
     return { ...x, outcome: 'refused by NEAR', error: kind, secs: (Date.now() - t0) / 1000 };
   }
+}
+
+const planView = (p) => ({ balance: Number(BigInt(p.balance) / 1_000_000n), publicCapPerPeriod: Number(BigInt(p.cap) / 1_000_000n), periodSecs: Number(p.period_secs), releases: p.releases, busted: p.busted, sealed: !!p.sealed });
+
+// the model if we have one, the rule parser if not; either way every try goes through attempt()
+async function ask(planId, coin, text, who) {
+  const p = await view(S.plan, 'get_plan', { plan_id: planId });
+  let fallback = 'no model key on this server';
+  if (AI_KEY) {
+    try {
+      const results = [];
+      const run = await think({
+        key: AI_KEY, text,
+        readPlan: async () => planView(await view(S.plan, 'get_plan', { plan_id: planId })),
+        act: async (x) => { const r = await attempt(planId, coin, x, who); results.push(r); return r; },
+      });
+      brainLive = true;
+      return { mode: 'model', ...run, results };
+    } catch (e) {
+      brainLive = false;
+      fallback = String(e.message || e).slice(0, 160);
+    }
+  }
+  const tries = understand(text, planView(p).balance).slice(0, 5);
+  const results = [];
+  for (const x of tries) results.push(await attempt(planId, coin, x, who));
+  return { mode: 'rules', fallback, understood: tries, results };
 }
 
 async function launchCoin(name, symbol, owner = null) {
@@ -167,7 +199,7 @@ http.createServer((req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(',')[0].trim();
   if (req.method === 'GET' && url.pathname === '/near/coins') return json(res, 200, db.coins.slice(-20).reverse());
-  if (req.method === 'GET' && url.pathname === '/near/info') return json(res, 200, { plan: S.plan, agent: S.agent, dev: S.dev, coin: S.coin, judge: JUDGE, publicCap: PUBLIC_CAP, inPlan: IN_PLAN });
+  if (req.method === 'GET' && url.pathname === '/near/info') return json(res, 200, { plan: S.plan, agent: S.agent, dev: S.dev, coin: S.coin, judge: JUDGE, publicCap: PUBLIC_CAP, inPlan: IN_PLAN, brain: { model: AI_KEY ? MODEL : null, live: brainLive } });
   if (req.method !== 'POST') return json(res, 404, { error: 'unknown path' });
   let raw = '';
   req.on('data', (c) => { raw += c; if (raw.length > 4000) req.destroy(); });
@@ -213,20 +245,14 @@ http.createServer((req, res) => {
         const who = await agentAccount(String(body.agent));
         const p = await view(S.plan, 'get_plan', { plan_id: planId });
         if (!p || p.holder !== who.accountId) return json(res, 400, { error: 'That agent does not hold that plan.' });
-        const tries = understand(body.text, Number(BigInt(p.balance) / 1_000_000n));
-        const results = [];
-        for (const x of tries.slice(0, 5)) results.push(await attempt(planId, p.token, x, who));
-        return json(res, 200, { understood: tries.slice(0, 5), results });
+        return json(res, 200, await ask(planId, p.token, body.text, who));
       }
       const known = db.plans[planId];
       if (!known) return json(res, 404, { error: 'Not a playground plan.' });
       if (url.pathname === '/near/ask') {
         if (!allow(`ask:${ip}`, 30, 600_000)) return json(res, 429, { error: 'Slow down a little.' });
         const p = await view(S.plan, 'get_plan', { plan_id: planId });
-        const tries = understand(body.text, Number(BigInt(p.balance) / 1_000_000n));
-        const results = [];
-        for (const x of tries.slice(0, 5)) results.push(await attempt(planId, known.coin, x));
-        return json(res, 200, { understood: tries.slice(0, 5), results });
+        return json(res, 200, await ask(planId, known.coin, body.text, agent));
       }
       if (url.pathname === '/near/reveal') {
         const { commitment, ...rules } = rulesFor(planId);
@@ -245,4 +271,4 @@ http.createServer((req, res) => {
     } catch (e) { json(res, 500, { error: String(e.message || e).slice(0, 200) }); }
   });
 }).listen(Number(process.env.PORT || 8790));
-console.log(`playground on :${process.env.PORT || 8790}, plans on ${S.plan}, agent ${S.agent}`);
+console.log(`playground on :${process.env.PORT || 8790}, plans on ${S.plan}, agent ${S.agent}, brain ${AI_KEY ? MODEL : 'rule parser'}`);

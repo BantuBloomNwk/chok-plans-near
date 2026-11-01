@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@phala/dcap-qvl": "^0.7.0",
     "bs58": "^6.0.0",
+    "ethers": "^6.15.0",
     "near-api-js": "5.1.1"
   }
 }
