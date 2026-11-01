@@ -1,0 +1,11 @@
+{
+  "root": "chokplans-mvxhykzp.testnet",
+  "plan": "plan.chokplans-mvxhykzp.testnet",
+  "coin": "coin.chokplans-mvxhykzp.testnet",
+  "dev": "dev.chokplans-mvxhykzp.testnet",
+  "agent": "agent.chokplans-mvxhykzp.testnet",
+  "fan": "fan.chokplans-mvxhykzp.testnet",
+  "planDeployed": true,
+  "coinDeployed": true,
+  "agentKey": "ed25519:2tgZB9n3djgV9vz86QwtiHWmQm6UJLZFMQAFU5EaTJNN"
+}
