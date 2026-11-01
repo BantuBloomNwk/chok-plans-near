@@ -1,2 +1,7 @@
 [resolver]
 incompatible-rust-versions = "fallback"
+
+# near-sdk only talks to the NEAR host (readable panic messages, host hashing) when built with
+# `--cfg near`; cargo-near adds it, a plain cargo build does not
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "near", "-C", "link-arg=-s", "-C", "target-cpu=mvp"]

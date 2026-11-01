@@ -47,7 +47,8 @@ The agent never has the rules, so there's nothing for it to leak. If it tries to
 
 ## On testnet now
 
-- Plan contract: `plans.chokplans-mvxhykzp.testnet`
+- Plan contract: `sealed.chokplans-mvxhykzp.testnet`. It has no access keys at all, so nobody, us included, can redeploy or change it. `npm run verify` checks that, and that its code is this repo's build.
+- The agent: `sealagent.chokplans-mvxhykzp.testnet`. Its only key can call `request_release` on the plan contract and nothing else.
 - Demo coin: `coin.chokplans-mvxhykzp.testnet`
 - `deployment.json` lists every account the scripts use. It holds no keys.
 
@@ -72,7 +73,8 @@ You need Rust 1.93 or later with the `wasm32-unknown-unknown` and `wasm32-wasip2
 
 ```bash
 # the contracts
-RUSTFLAGS="-C link-arg=-s -C target-cpu=mvp" cargo build --target wasm32-unknown-unknown --release
+# (.cargo/config.toml adds the flags, including the --cfg near that near-sdk needs)
+cargo build --target wasm32-unknown-unknown --release
 
 # the judge, and its tests
 cargo test --manifest-path judge/Cargo.toml

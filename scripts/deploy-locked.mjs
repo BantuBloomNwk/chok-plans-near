@@ -3,7 +3,7 @@
 // key is a function-call key for request_release on the new contract, and points
 // deployment.json at both. The old contract stays where it is, for the record.
 //
-//   node scripts/deploy-locked.mjs <name>
+//   node scripts/deploy-locked.mjs <name> [agent name, default quickagent]
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -37,7 +37,7 @@ console.log('deployed', id);
 await dev.functionCall({ contractId: S.coin, methodName: 'storage_deposit', args: { account_id: id }, attachedDeposit: BigInt(utils.format.parseNearAmount('0.0125')), gas: 30_000_000_000_000n });
 
 // 3. a quick-try agent made with one function-call key and no full-access key, ever
-const agentId = `quickagent.${S.root}`;
+const agentId = `${process.argv[3] || 'quickagent'}.${S.root}`;
 const ak = KeyPair.fromRandom('ed25519');
 await store.setKey('testnet-agent', agentId, ak);
 await root.signAndSendTransaction({ receiverId: agentId, actions: [
@@ -57,6 +57,6 @@ console.log('contract keys left:', keys.length, '| code hash on chain', state.co
 const agentKeys = (await (await near.account(agentId)).getAccessKeys()).map((k) => (k.access_key.permission === 'FullAccess' ? 'FULL' : `${k.access_key.permission.FunctionCall.method_names} on ${k.access_key.permission.FunctionCall.receiver_id}`));
 console.log('agent keys:', agentKeys);
 
-Object.assign(S, { legacyPlan: S.plan, legacyAgent: S.agent, plan: id, agent: agentId, agentKey: ak.getPublicKey().toString(), planCodeHash: state.code_hash, planLocked: keys.length === 0 });
+Object.assign(S, { retired: [...(S.retired || []), ...[S.legacyPlan, S.legacyAgent].filter(Boolean)], legacyPlan: S.plan, legacyAgent: S.agent, plan: id, agent: agentId, agentKey: ak.getPublicKey().toString(), planCodeHash: state.code_hash, planLocked: keys.length === 0 });
 fs.writeFileSync(STATE, JSON.stringify(S, null, 2) + '\n');
 console.log('deployment.json now points at', id);

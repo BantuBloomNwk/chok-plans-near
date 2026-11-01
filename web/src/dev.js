@@ -16,7 +16,7 @@ import { PublicKey } from '@near-js/crypto';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
 const RPC = 'https://test.rpc.fastnear.com';
-const PLAN = 'locked.chokplans-mvxhykzp.testnet';
+const PLAN = 'sealed.chokplans-mvxhykzp.testnet';
 const BUSDOG = 'coin.chokplans-mvxhykzp.testnet';
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;

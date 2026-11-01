@@ -1,15 +1,19 @@
 {
   "root": "chokplans-mvxhykzp.testnet",
-  "plan": "locked.chokplans-mvxhykzp.testnet",
+  "plan": "sealed.chokplans-mvxhykzp.testnet",
   "coin": "coin.chokplans-mvxhykzp.testnet",
   "dev": "dev.chokplans-mvxhykzp.testnet",
-  "agent": "quickagent.chokplans-mvxhykzp.testnet",
+  "agent": "sealagent.chokplans-mvxhykzp.testnet",
   "fan": "fan.chokplans-mvxhykzp.testnet",
   "planDeployed": true,
   "coinDeployed": true,
-  "agentKey": "ed25519:F5wSUgYB98rhdY1ifHrws1EVfDjaVemMbtzFJUoNvtYz",
-  "legacyPlan": "plans.chokplans-mvxhykzp.testnet",
-  "legacyAgent": "agent.chokplans-mvxhykzp.testnet",
-  "planCodeHash": "5yhHtBrXwKvFbEFq5LQdPPKitGyBRd3CizVkZybHTyaG",
-  "planLocked": true
+  "agentKey": "ed25519:V4Zt3Yh9X4e55DcsHapb5f4NMTcWhs1Fk6pqEN7HG2y",
+  "legacyPlan": "locked.chokplans-mvxhykzp.testnet",
+  "legacyAgent": "quickagent.chokplans-mvxhykzp.testnet",
+  "planCodeHash": "6ab3YDYG5XQeKJyG7podjkfN2U7a3uj7SgkL3wnJvbeg",
+  "planLocked": true,
+  "retired": [
+    "plans.chokplans-mvxhykzp.testnet",
+    "agent.chokplans-mvxhykzp.testnet"
+  ]
 }
