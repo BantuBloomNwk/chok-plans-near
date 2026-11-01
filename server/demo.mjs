@@ -58,8 +58,14 @@ let queue = Promise.resolve();
 const serial = (f) => { const p = queue.then(f, f); queue = p.catch(() => {}); return p; };
 
 const PUBLIC_CAP = 10_000_000, IN_PLAN = 20_000_000;
+// the demo coin has a fixed supply, so say so plainly when the dev has run out instead of a wasm trap
+async function needCoins(n) {
+  const have = BigInt(await view(S.coin, 'ft_balance_of', { account_id: S.dev }));
+  if (have < BigInt(tokens(n))) throw Object.assign(new Error('The playground is out of demo coins for a moment. Try again in a few minutes.'), { status: 503 });
+}
 async function makePlan(coin, amount = IN_PLAN, cap = PUBLIC_CAP) {
   return serial(async () => {
+    await needCoins(amount);
     const id = await view(S.plan, 'next_plan_id', {});
     const r = rulesFor(id);
     await call(dev, S.plan, 'create_plan', {
@@ -73,6 +79,25 @@ async function makePlan(coin, amount = IN_PLAN, cap = PUBLIC_CAP) {
     return { plan: id, coin, commitment: r.commitment, cap, inPlan: amount };
   });
 }
+
+// Bring coins home from playground plans nobody has touched for an hour, by the rules: the agent
+// asks for exactly what each plan's sealed rules and public cap allow, the judge clears it and it
+// goes to the dev. Runs when the dev is low, so the playground never runs dry.
+async function recycle() {
+  if (BigInt(await view(S.coin, 'ft_balance_of', { account_id: S.dev })) >= BigInt(tokens(200_000_000))) return;
+  const plans = await view(S.plan, 'list_plans', { from: 0, limit: 200 });
+  const now = BigInt(Date.now()) * 1_000_000n;
+  for (const [id, p] of plans) {
+    const idle = !db.plans[id] || Date.now() - db.plans[id].made > 3_600_000;
+    if (p.holder !== S.agent || p.awaiting || BigInt(p.balance) === 0n || !idle) continue;
+    const r = rulesFor(id);
+    const room = now - BigInt(p.period_start) >= BigInt(p.period_ns) ? BigInt(p.cap) : BigInt(p.cap) - BigInt(p.released_in_period);
+    const amount = ([BigInt(r.max_per_release), room, BigInt(p.balance)].reduce((a, b) => (a < b ? a : b)) / 1_000_000n) * 1_000_000n;
+    if (amount > 0n) await call(agent, S.plan, 'request_release', { plan_id: id, amount: amount.toString() }).catch(() => {});
+  }
+}
+setInterval(() => recycle().catch(() => {}), 10 * 60_000);
+setTimeout(() => recycle().catch(() => {}), 30_000);
 
 // agents that visitors hire: the server makes the key pair and keeps the secret half; the
 // visitor's wallet creates the agent account with that public key as its only key, a
@@ -220,6 +245,7 @@ http.createServer((req, res) => {
       if (url.pathname === '/near/faucet') {
         const to = acct(body.account);
         if (!allow(`faucet:${ip}`, 3, 3_600_000) || !allow(`faucet:${to}`, 2, 86_400_000)) return json(res, 429, { error: 'That is enough BUSDOG for now.' });
+        await needCoins(50_000_000);
         await call(dev, S.coin, 'storage_deposit', { account_id: to }, utils.format.parseNearAmount('0.0125'));
         const out = await call(dev, S.coin, 'ft_transfer', { receiver_id: to, amount: tokens(50_000_000) }, '1');
         return json(res, 200, { coin: S.coin, amount: 50_000_000, tx: out.transaction.hash });
@@ -268,7 +294,7 @@ http.createServer((req, res) => {
         return json(res, 200, { plan: planId, rules, commitment, onChain: !!after.revealed, tx });
       }
       json(res, 404, { error: 'unknown path' });
-    } catch (e) { json(res, 500, { error: String(e.message || e).slice(0, 200) }); }
+    } catch (e) { json(res, e.status || 500, { error: /unreachable|ExecutionError/.test(String(e.message)) ? 'NEAR refused that one. Try again in a minute.' : String(e.message || e).slice(0, 200) }); }
   });
 }).listen(Number(process.env.PORT || 8790));
 console.log(`playground on :${process.env.PORT || 8790}, plans on ${S.plan}, agent ${S.agent}, brain ${AI_KEY ? MODEL : 'rule parser'}`);
