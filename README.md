@@ -17,7 +17,7 @@ No wallet needed for steps 1 to 5.
 3. **Play by the rules, then break them.** Type `release 1M`. It's judged in the enclave and **RELEASED**. Type `release 1M` again straight away. **BUSTED**: too soon, by a sealed rule whose value you still can't see.
 4. **Check the agent.** Open *Under the hood* on any answer. You'll see the model's system prompt, every raw tool call and what the chain said back. You'll also see the TEE checks: Intel's quote, our nonce, NVIDIA's GPU evidence, and a signature on every answer that recovers to the attested key.
 5. **Reveal.** Press *Reveal my plan's rules*. The rules come out, the contract hashes them against the commitment from step 1, and records them. Every verdict above now makes sense.
-6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. A ringed point on the chart and a `dev` tag on the tape mark the dev's own trades, and the card under it shows how much is still locked in the dev's plan. Connect a testnet wallet to buy with NEAR and sell back.
+6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. Each face on the chart is a trader. The one with the crown is the dev, and a `DEV` tag marks them in the trades and holders tables. Stamps along the top show what the plan did, and the card under it shows how much is still locked in the dev's plan. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
 7. **Be the dev.** Connect a wallet, launch your own coin to it, put 80% on sale in the market, and lock the rest in a plan. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder, and its only key is created by your own wallet.
 8. **Check us.** Run `npm run verify` (it uses no keys and only reads testnet) and `node scripts/attack.mjs`. The last attack run is in [`attack-log.md`](attack-log.md).
 
@@ -144,7 +144,7 @@ Sealed plans also need the OutLayer CLI logged in as the dev, the judge hosted a
 - **Contracts:** near-sdk 5.29.1 and near-contract-standards (NEP-141), in Rust.
 - **The judge:** a WASI program, run by OutLayer.
 - **Scripts and the playground:** near-api-js 5.1.1, FastNEAR's testnet RPC, NEAR AI Cloud, `@phala/dcap-qvl` (Intel quote checks), `ethers` (signature recovery) and NVIDIA's attestation service.
-- **The page:** Vite and NEAR Wallet Selector 10 (MyNearWallet, Meteor, HERE, Intear).
+- **The page:** Vite, NEAR Wallet Selector 10 (MyNearWallet, Meteor, HERE, Intear) and [KLineChart](https://github.com/klinecharts/KLineChart) 10 (Apache-2.0) for the candles and axes. The trader bubbles, stamps and panels in `web/src/terminal` are ours.
 
 The code was written with an AI coding assistant, working to our design. Every decision about what the contracts allow, and every claim in this README, was made and checked by us. `npm run verify` is there so you don't have to take our word for any of it.
 
