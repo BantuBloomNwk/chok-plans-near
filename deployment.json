@@ -15,5 +15,9 @@
   "retired": [
     "plans.chokplans-mvxhykzp.testnet",
     "agent.chokplans-mvxhykzp.testnet"
-  ]
+  ],
+  "coins": "coins.chokplans-mvxhykzp.testnet",
+  "market": "market.chokplans-mvxhykzp.testnet",
+  "lastMarketTest": "test-mvxrdnb1.coins.chokplans-mvxhykzp.testnet",
+  "marketLocked": true
 }

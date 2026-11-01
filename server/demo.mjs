@@ -11,7 +11,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import { connect, keyStores, KeyPair, utils } from 'near-api-js';
+import { connect, keyStores, KeyPair, utils, transactions } from 'near-api-js';
 import { think, MODEL } from '../agent/brain.mjs';
 
 const RPC = 'https://test.rpc.fastnear.com';
@@ -32,6 +32,7 @@ await agentStore.setKey('testnet', S.agent, await files.getKey('testnet-agent', 
 const agent = await (await connect({ networkId: 'testnet', nodeUrl: RPC, keyStore: agentStore })).account(S.agent);
 const dev = await near.account(S.dev);
 const root = await near.account(S.root);
+const maker = await near.account(S.coins);
 // the model key is optional: without it (or if NEAR AI is down) the agent falls back to a plain rule parser
 const AI_KEY = (() => { try { return fs.readFileSync(process.env.AI_KEY_FILE || path.join(os.homedir(), '.near-ai-key'), 'utf8').trim(); } catch { return ''; } })();
 let brainLive = false; // true once the model has actually answered since the server started
@@ -59,13 +60,13 @@ const serial = (f) => { const p = queue.then(f, f); queue = p.catch(() => {}); r
 
 const PUBLIC_CAP = 10_000_000, IN_PLAN = 20_000_000;
 // the demo coin has a fixed supply, so say so plainly when the dev has run out instead of a wasm trap
-async function needCoins(n) {
-  const have = BigInt(await view(S.coin, 'ft_balance_of', { account_id: S.dev }));
+async function needCoins(n, coin = S.coin) {
+  const have = BigInt(await view(coin, 'ft_balance_of', { account_id: S.dev }));
   if (have < BigInt(tokens(n))) throw Object.assign(new Error('The playground is out of demo coins for a moment. Try again in a few minutes.'), { status: 503 });
 }
 async function makePlan(coin, amount = IN_PLAN, cap = PUBLIC_CAP) {
   return serial(async () => {
-    await needCoins(amount);
+    await needCoins(amount, coin);
     const id = await view(S.plan, 'next_plan_id', {});
     const r = rulesFor(id);
     await call(dev, S.plan, 'create_plan', {
@@ -131,7 +132,21 @@ function understand(text, balanceTokens) {
   return tries;
 }
 
+// every ask on a plan, newest first, each with its transaction so anyone can check it on chain
+function logIt(planId, r) {
+  db.logs ??= {};
+  const list = (db.logs[planId] ??= []);
+  list.unshift({ at: Date.now(), kind: r.kind, amount: r.amount ?? null, to: r.to ?? null, outcome: r.outcome, reason: r.reason ?? r.error ?? r.why ?? null, tx: r.tx ?? null });
+  list.length = Math.min(list.length, 60);
+  save();
+  return r;
+}
+
 async function attempt(planId, coin, x, who = agent) {
+  return logIt(planId, await tryIt(planId, coin, x, who));
+}
+
+async function tryIt(planId, coin, x, who) {
   const t0 = Date.now();
   try {
     if (x.kind === 'transfer') {
@@ -193,21 +208,21 @@ async function ask(planId, coin, text, who) {
   return { mode: 'rules', fallback, understood: tries, results };
 }
 
+// A coin is made by the coins account (which exists for nothing else, so the market can tell a
+// launcher coin from anything) in one transaction with no key at all: nobody can ever change it.
+// The playground's own coins list 80% on the market and put the dev's 20% in a sealed plan. A
+// visitor's coin is minted to their wallet, and their wallet lists it and plans it.
 async function launchCoin(name, symbol, owner = null) {
   const sym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-  const label = `${sym.toLowerCase()}-${Date.now().toString(36)}`;
-  const id = `${label}.${S.root}`;
-  const kp = KeyPair.fromRandom('ed25519');
-  await files.setKey('testnet', id, kp);
+  const id = `${sym.toLowerCase()}-${Date.now().toString(36)}.${S.coins}`;
   const step = async (what, f) => { try { return await f(); } catch (e) { throw new Error(`${what}: ${String(e.message).slice(0, 160)}`); } };
-  await step('creating the coin account', () => root.createAccount(id, kp.getPublicKey(), utils.format.parseNearAmount('2.35')));
-  const coin = await near.account(id);
-  await step('deploying the coin', () => coin.deployContract(TOKEN_WASM));
-  await step('minting', () => call(coin, id, 'new', { owner: owner || S.dev, total_supply: tokens(1_000_000_000), name: name.slice(0, 32), symbol: sym }));
-  await step('registering the plan contract', () => call(dev, id, 'storage_deposit', { account_id: S.plan }, utils.format.parseNearAmount('0.01')));
-  // minted to a visitor's wallet: their wallet makes the plan, not us
+  await step('deploying the coin', () => maker.signAndSendTransaction({ receiverId: id, actions: [
+    transactions.createAccount(), transactions.transfer(BigInt(utils.format.parseNearAmount('2.4'))), transactions.deployContract(TOKEN_WASM),
+    transactions.functionCall('new', { owner: owner || S.dev, total_supply: tokens(1_000_000_000), name: name.slice(0, 32), symbol: sym }, 30_000_000_000_000n, 0n),
+  ] }));
+  for (const a of [S.market, S.plan]) await step('registering the market and the plan', () => call(dev, id, 'storage_deposit', { account_id: a }, utils.format.parseNearAmount('0.0125')));
   if (owner) { db.coins.push({ coin: id, name, symbol: sym, owner, at: Date.now() }); save(); return { coin: id, name, symbol: sym, owner }; }
-  // the dev's bag, 20% of supply, goes into a sealed plan from the start
+  await step('listing it', () => call(dev, id, 'ft_transfer_call', { receiver_id: S.market, amount: tokens(800_000_000), msg: '{"list":{}}' }, '1', '100000000000000'));
   const made = await step('making the plan', () => makePlan(id, 200_000_000, 20_000_000));
   db.coins.push({ coin: id, name, symbol: sym, plan: made.plan, at: Date.now() });
   save();
@@ -223,8 +238,9 @@ http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(',')[0].trim();
+  if (req.method === 'GET' && url.pathname === '/near/log') return json(res, 200, (db.logs ?? {})[Number(url.searchParams.get('plan'))] ?? []);
   if (req.method === 'GET' && url.pathname === '/near/coins') return json(res, 200, db.coins.slice(-20).reverse());
-  if (req.method === 'GET' && url.pathname === '/near/info') return json(res, 200, { plan: S.plan, agent: S.agent, dev: S.dev, coin: S.coin, judge: JUDGE, publicCap: PUBLIC_CAP, inPlan: IN_PLAN, brain: { model: AI_KEY ? MODEL : null, live: brainLive } });
+  if (req.method === 'GET' && url.pathname === '/near/info') return json(res, 200, { plan: S.plan, agent: S.agent, dev: S.dev, coin: S.coin, judge: JUDGE, publicCap: PUBLIC_CAP, inPlan: IN_PLAN, market: S.market, coins: S.coins, brain: { model: AI_KEY ? MODEL : null, live: brainLive } });
   if (req.method !== 'POST') return json(res, 404, { error: 'unknown path' });
   let raw = '';
   req.on('data', (c) => { raw += c; if (raw.length > 4000) req.destroy(); });
@@ -238,7 +254,7 @@ http.createServer((req, res) => {
       if (url.pathname === '/near/coin') {
         const name = String(body.name || '').trim(), symbol = String(body.symbol || '').trim();
         if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return json(res, 400, { error: 'Give it a name and a ticker of 2 to 8 letters or numbers.' });
-        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 40, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
+        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 10, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
         return json(res, 200, await launchCoin(name, symbol));
       }
       const acct = (v) => { const a = String(v || '').trim().toLowerCase(); if (!/^[a-z0-9_.-]{2,64}\.testnet$/.test(a)) throw new Error('a testnet account, like you.testnet'); return a; };
@@ -261,7 +277,7 @@ http.createServer((req, res) => {
       if (url.pathname === '/near/my-coin') {
         const owner = acct(body.owner), name = String(body.name || '').trim(), symbol = String(body.symbol || '').trim();
         if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return json(res, 400, { error: 'Give it a name and a ticker of 2 to 8 letters or numbers.' });
-        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 40, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
+        if (!allow(`coin:${ip}`, 2, 3_600_000) || !allow('coin:all', 10, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
         return json(res, 200, await launchCoin(name, symbol, owner));
       }
       const planId = Number(body.plan);

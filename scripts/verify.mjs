@@ -10,6 +10,7 @@
 // 5. every revealed plan's rules hash to the commitment it was made with
 // 6. every transaction in attack-log.md ended the way the log says
 // 7. with a NEAR AI key, the model the agent thinks with passes a fresh TEE attestation
+// 8. the market is locked, our build, lists only launcher coins, and every pool can pay its sellers
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -47,6 +48,33 @@ const scoped = agentKeys.length > 0 && agentKeys.every((k) => {
   return fc && fc.receiver_id === S.plan && fc.method_names.length === 1 && fc.method_names[0] === 'request_release';
 });
 check(scoped, 'the agent can only call request_release on the plan contract', agentKeys.map((k) => (k.access_key.permission === 'FullAccess' ? 'FULL ACCESS' : `${k.access_key.permission.FunctionCall.method_names} on ${k.access_key.permission.FunctionCall.receiver_id}`)).join('; '));
+
+// the market: locked, our build, and every coin on it made by the launcher with no keys and our token code
+if (S.market) {
+  const mKeys = await keys(S.market);
+  check(mKeys.length === 0, 'the market contract has no access keys', `${mKeys.length} keys on ${S.market}`);
+  const mAcc = await rpc.query({ request_type: 'view_account', finality: 'final', account_id: S.market });
+  const mWasm = local('target/wasm32-unknown-unknown/release/market.wasm');
+  if (mWasm) check(mAcc.code_hash === bs58.encode(sha(mWasm)), 'the market\'s code is this repo\'s build', mAcc.code_hash);
+  const call = async (account, method, args) => JSON.parse(Buffer.from((await rpc.query({ request_type: 'call_function', finality: 'final', account_id: account, method_name: method, args_base64: Buffer.from(JSON.stringify(args)).toString('base64') })).result).toString());
+  check((await call(S.market, 'launcher', {})) === S.coins, `only coins made under ${S.coins} can list`);
+  const pools = await call(S.market, 'list_pools', { from: 0, limit: 200 });
+  const tokenWasm = local('target/wasm32-unknown-unknown/release/token.wasm');
+  const bad = [];
+  for (const p of pools) {
+    const k = await keys(p.token);
+    const code = (await rpc.query({ request_type: 'view_account', finality: 'final', account_id: p.token })).code_hash;
+    if (k.length || (tokenWasm && code !== bs58.encode(sha(tokenWasm)))) bad.push(p.token);
+  }
+  check(bad.length === 0, `every coin on the market has no keys and runs this repo's token code (${pools.length} checked)`, bad.length ? `not so: ${bad.join(', ')}` : '');
+  let solvent = 0;
+  for (const p of pools) {
+    const sold = BigInt(p.sale_supply) - BigInt(p.tokens_left);
+    const out = sold > 0n ? BigInt(await call(S.market, 'quote_sell', { token: p.token, amount: sold.toString() })) : 0n;
+    if (out <= BigInt(p.real_near)) solvent++;
+  }
+  check(solvent === pools.length, 'every pool holds enough NEAR to buy back every token it sold', `${solvent} of ${pools.length}`);
+}
 
 // 4 and 5: every plan's judge and every reveal
 const plans = [];

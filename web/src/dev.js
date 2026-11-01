@@ -18,6 +18,7 @@ const API = 'https://near-play.161-97-74-212.sslip.io';
 const RPC = 'https://test.rpc.fastnear.com';
 const PLAN = 'sealed.chokplans-mvxhykzp.testnet';
 const BUSDOG = 'coin.chokplans-mvxhykzp.testnet';
+const MARKET = 'market.chokplans-mvxhykzp.testnet';
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;
 const tokens = (n) => (BigInt(Math.round(n)) * 1_000_000n).toString();
@@ -48,17 +49,25 @@ async function post(path, body) {
 let selector, modal, me = null;
 const fc = (methodName, args, gas = 100, deposit = 0n) => actionCreators.functionCall(methodName, args, TGAS(gas), deposit);
 
-async function send(transactions, label) {
+async function send(transactions, label, say = status) {
   const wallet = await selector.wallet();
-  status(`${label}: approve it in your wallet…`);
+  say(`${label}: approve it in your wallet…`);
   try {
     // browser wallets leave the page and come back; injected ones answer here
     await wallet.signAndSendTransactions({ transactions: transactions.map((t) => ({ signerId: me, ...t })) });
-    status(`${label}: done.`);
-  } catch (e) { status(`${label}: ${e.message || e}`, true); throw e; }
+    say(`${label}: done.`);
+  } catch (e) { say(`${label}: ${e.message || e}`, true); throw e; }
   await new Promise((r) => setTimeout(r, 2500));
   await render();
 }
+
+// the market section uses the same wallet
+window.cpn = {
+  get me() { return me; },
+  connect: () => modal.show(),
+  send: (txs, label, say) => send(txs, label, say),
+  fc, NEAR,
+};
 function status(text, bad = false) { const el = $('dev-status'); el.textContent = text; el.className = bad ? 'err' : 'muted'; }
 
 // everything about this account, read from the chain
@@ -67,7 +76,8 @@ async function state() {
   const coins = [BUSDOG, ...(keep.get('cpn.mycoins') || [])];
   const balances = await Promise.all(coins.map((c) => view(c, 'ft_balance_of', { account_id: me }).catch(() => '0')));
   const agents = keep.get(`cpn.agents.${me}`) || [];
-  return { plans, coins: coins.map((c, i) => ({ coin: c, balance: balances[i] })), agents };
+  const listed = await Promise.all(coins.map((c) => (c === BUSDOG ? true : view(MARKET, 'get_pool', { token: c }).then((p) => !!p).catch(() => false))));
+  return { plans, coins: coins.map((c, i) => ({ coin: c, balance: balances[i], listed: listed[i] })), agents };
 }
 
 function planRow([id, p], agents) {
@@ -98,7 +108,7 @@ async function render() {
   if (!me) return;
   try {
     const s = await state();
-    $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span></div></div>`).join('');
+    $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span>${c.coin === BUSDOG ? '' : c.listed ? ` <a href="#coin=${encodeURIComponent(c.coin)}" class="small" onclick="setTimeout(()=>window.cpnMarketRefresh?.(),50)">trading in the market</a>` : BigInt(c.balance) > 0n ? `<div><button class="btn ghost d-list" data-coin="${esc(c.coin)}" data-amount="${(BigInt(c.balance) * 8n / 10n).toString()}" style="margin-top:6px">Put 80% on sale in the market</button><span class="muted small"> then lock the rest in a plan below</span></div>` : ''}</div></div>`).join('');
     $('dev-token').innerHTML = s.coins.map((c) => `<option value="${esc(c.coin)}">${esc(c.coin)}</option>`).join('');
     $('dev-plans').innerHTML = s.plans.length ? s.plans.sort((a, b) => b[0] - a[0]).map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Make one above.</p>';
     // the agents you hired: show their keys straight from the chain
@@ -154,7 +164,7 @@ async function onPlanClick(e) {
 async function main() {
   selector = await setupWalletSelector({ network: 'testnet', modules: [setupMyNearWallet(), setupMeteorWallet(), setupHereWallet(), setupIntearWallet()] });
   modal = setupModal(selector, { contractId: PLAN });
-  const sync = () => { me = selector.store.getState().accounts[0]?.accountId ?? null; render(); };
+  const sync = () => { me = selector.store.getState().accounts[0]?.accountId ?? null; render(); window.dispatchEvent(new Event('cpn-wallet')); };
   selector.store.observable.subscribe(sync);
   sync();
   $('dev-connect').onclick = async () => { if (me) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
@@ -168,6 +178,12 @@ async function main() {
     } catch (e) { status(e.message, true); }
   };
   $('dev-make').onclick = () => makePlan().catch(() => {});
+  $('dev-balances').onclick = async (e) => {
+    const b = e.target.closest('.d-list');
+    if (!b) return;
+    await send([{ receiverId: b.dataset.coin, actions: [fc('ft_transfer_call', { receiver_id: MARKET, amount: b.dataset.amount, msg: '{"list":{}}' }, 100, 1n)] }], 'Listing your coin').catch(() => {});
+    window.cpnMarketRefresh?.();
+  };
   $('dev-plans').onclick = (e) => onPlanClick(e).catch(() => {});
   setInterval(() => me && render(), 8000);
 }
