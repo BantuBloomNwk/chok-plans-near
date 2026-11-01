@@ -70,7 +70,7 @@ async function load() {
 
 function list() {
   // a coin with barely any trades waits behind the toggle, so the list opens on coins worth looking at
-  const live = (p) => p.trades >= 3 && !/^test-/.test(p.token);
+  const live = (p) => (p.trades >= 3 && !/^test-/.test(p.token)) || p.creator === window.cpn?.me;
   const shown = showAll ? coins : coins.filter((p) => live(p) || p.token === picked);
   const hidden = coins.length - shown.length;
   const demo = SAMPLE ? `<button class="mk-coin${picked === 'sample' ? ' on' : ''}" data-coin="sample"><span class="mk-sym">$DANDOG</span><span class="mk-name">Sample data</span></button>` : '';

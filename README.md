@@ -18,7 +18,7 @@ No wallet needed for steps 1 to 5.
 4. **Check the agent.** Open *Verified* above the console for the contract and TEE checks. Open *Under the hood* on any answer for the model's system prompt, every raw tool call, what the chain said back and the signature on every answer.
 5. **Reveal.** Press *Reveal my plan's rules*. The rules come out, the contract hashes them against the commitment from step 1, and records them. Every verdict above now makes sense.
 6. **Trade.** In "Trade", pick a coin. The chart and the tape come from the market contract. The Danfo Dog coin's trades are real transactions from test wallets of ours (`scripts/showcase.mjs`), so there's something to look at. Each face on the chart is a trader, the one with the crown is the dev, and stamps along the top show what the plan did, read from the plan's own log on chain. Add `?sample` to the URL to see the chart on 400 made-up trades, labelled as sample data. Connect a testnet wallet to buy with NEAR and sell back.
-7. **Be the dev.** Connect a wallet (we've tested WALLETS_TESTED; MyNearWallet has stopped accepting new app connections), set your plan's terms and launch. One transaction makes the coin, puts 80% on sale and your 20% in the plan, so you never hold it loose. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder.
+7. **Be the dev.** Connect a wallet (Meteor works, and it can make you a testnet account; MyNearWallet has stopped accepting new app connections), set your plan's terms and launch. One transaction makes the coin, puts 80% on sale and your 20% in the plan, so you never hold it loose and there's nothing to deposit. Each plan then tells you what to try next: ask for more than the cap, then less. Leave the loosening box unticked and that plan can never be loosened. You can make an agent the holder.
 8. **Check us.** Run the commands under [Running it yourself](#running-it-yourself). `npm run verify` needs no keys. `node scripts/attack.mjs --account you.testnet` attacks a plan from your own testnet account, and the last run is in [`attack-log.md`](attack-log.md).
 
 ## What's on testnet
@@ -123,6 +123,7 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 ## What it isn't, yet
 
 - It's on testnet only, and it hasn't been audited.
+- Of the wallets on the page, we've run Meteor by hand. HERE and Intear are listed but not yet proven.
 - The playground's accounts are topped up from NEAR's testnet helper, and its daily limits (coins, sponsored launches, plans, orders per plan) are set to what that can carry. It says so when a limit is reached.
 - **The playground server holds keys** for the demo's dev account, the quick-try agent and the seed its sealed rules come from, all in one process, so visitors can try a plan without a wallet. It also knows every quick-try plan's sealed rules, which is why revealing is a button there. It doesn't know the rules of a plan a dev sealed themselves.
 - **In "Be the dev", your wallet signs your launch and your plan, unless it's short of NEAR and we pay. If you hire an agent, our server makes and keeps its key so it can act for you.** That key can only call `request_release` on the plan contract, and only you get the ticket to give it orders. The server keeps that ticket's hash.

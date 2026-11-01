@@ -55,7 +55,12 @@ async function send(transactions, label, say = status) {
     // browser wallets leave the page and come back; injected ones answer here
     await wallet.signAndSendTransactions({ transactions: transactions.map((t) => ({ signerId: me, ...t })) });
     say(`${label}: done.`);
-  } catch (e) { say(`${label}: ${e.message || e}`, true); throw e; }
+  } catch (e) {
+    // a contract's own refusal is written for people; everything around it isn't
+    const raw = String(e.message || e);
+    say(`${label}: ${raw.match(/panicked: ([^"\n]+)/)?.[1] || raw}`, true);
+    throw e;
+  }
   await new Promise((r) => setTimeout(r, 2500));
   await render();
 }
@@ -67,7 +72,7 @@ window.cpn = {
   send: (txs, label, say) => send(txs, label, say),
   fc, NEAR,
 };
-function status(text, bad = false) { const el = $('dev-status'); el.textContent = text; el.className = bad ? 'err' : 'muted'; }
+function status(text, bad = false) { const el = $('dev-status'); el.textContent = text; el.className = bad ? 'err' : 'muted'; el.hidden = !text; }
 
 // everything about this account, read from the chain
 async function state() {
@@ -90,9 +95,45 @@ function sealedBlock(id, p) {
   return `<p class="small"><b>Sealed by you:</b> ${rules}. Only this browser and the enclave know that. Lose them and you can't reveal, though the plan keeps working.</p><div class="dev-actions"><button class="btn ghost d-save">Save my rules</button><button class="btn ghost d-reveal">Reveal them on chain</button></div>`;
 }
 
+const secsUntil = (ns) => Math.max(0, Math.ceil((Number(ns) - Date.now() * 1e6) / 1e9));
+const countdown = (ns) => `<b data-until="${ns}">${secsUntil(ns)}s</b>`;
+
+// what to do next on this plan, in plain words, from its state on chain
+function nextStep(p, byAgent) {
+  const secret = p.sealed && sealedStore()[p.sealed.commitment];
+  if (secret && !secret.stored) return 'Press <b>Seal the rules</b> below. Asking fails until your rules are stored.';
+  if (BigInt(p.balance) === 0n) return 'This plan holds nothing yet. <b>Put tokens in</b> below, then ask to release.';
+  if (byAgent) return 'Your agent holds this plan. <b>Command your agent</b> and tell it what to try.';
+  const cap = M(p.cap);
+  if (p.busted === 0) return `Ask for <b>more than ${cap}</b> to see it refused and recorded as Busted. The cap will shrink.`;
+  if (p.releases === 0) return `Now ask for <b>${cap} or less</b>. It goes straight to your wallet.`;
+  return p.loosen_allowed ? 'That\'s the plan working. Under <b>Change the rules</b> you can try raising the cap or replacing the holder.' : 'That\'s the plan working. Under <b>Change the rules</b> you can try replacing the holder.';
+}
+
+function changeRules(id, p) {
+  if (p.beneficiary !== me) return '';
+  const notice = Number(BigInt(p.notice_ns) / 1_000_000_000n);
+  const due = (x) => secsUntil(x.effective_at) === 0;
+  const loosen = !p.loosen_allowed
+    ? '<p class="muted small"><b>Raise the cap:</b> not on this plan. It was launched to never loosen, so nobody can ever raise it.</p>'
+    : p.pending
+      ? `<p class="small"><b>Raising the cap to ${M(p.pending.cap)}.</b> ${due(p.pending) ? 'The notice has run out. Make it official, or cancel.' : `Everyone can see this. It can go ahead in ${countdown(p.pending.effective_at)}, and you can cancel until then.`}</p>
+         ${due(p.pending) ? '<button class="btn d-loosen-apply">Make the higher cap official</button> ' : ''}<button class="btn ghost d-cancel">Cancel it</button>`
+      : `<p class="small"><b>Raise the cap.</b> Three steps: propose it, wait out the ${notice}s public notice, then make it official. You can cancel any time before that.</p>
+         <div class="dev-actions"><label>New cap a minute, in millions (more than ${M(p.cap)})<input class="d-loosen-to" inputmode="decimal" placeholder="${Number(BigInt(p.cap) / 1_000_000_000_000n) * 2}"></label><button class="btn ghost d-loosen">Propose it</button></div>`;
+  const holder = p.pending_holder
+    ? `<p class="small"><b>Replacing the holder with <span class="mono">${esc(p.pending_holder.holder)}</span>.</b> ${due(p.pending_holder) ? 'The notice has run out. Make it official, or cancel.' : `It can go ahead in ${countdown(p.pending_holder.effective_at)}, and you can cancel until then.`}</p>
+       ${due(p.pending_holder) ? '<button class="btn d-holder-apply">Make the new holder official</button> ' : ''}<button class="btn ghost d-holder-cancel">Cancel it</button>`
+    : `<p class="small"><b>Replace the holder.</b> For an agent that's lost or gone bad. The new holder is under the same cap. Three steps: propose an account, wait out the ${notice}s public notice, then make it official.</p>
+       <div class="dev-actions"><label>New holder's account<input class="d-holder-to" placeholder="someone.testnet" autocomplete="off"></label><button class="btn ghost d-holder">Propose it</button></div>`;
+  return `<details class="dev-more" data-more="${id}"><summary><b>Change the rules</b> <span class="muted small">optional</span></summary>${loosen}<hr>${holder}</details>`;
+}
+
 function planRow([id, p], agents) {
   const byAgent = p.holder !== me;
   const opensIn = Math.max(0, Math.round((Number(p.not_before) - Date.now() * 1e6) / 1e9));
+  const empty = BigInt(p.balance) === 0n;
+  const deposit = `<label>Put tokens in, in millions<input class="d-in" inputmode="decimal" placeholder="20"></label><button class="btn ${empty ? '' : 'ghost'} d-deposit">Deposit</button>`;
   return `<div class="card dev-plan" data-plan="${id}">
     <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3>Plan #${id}</h3><span class="tag ${byAgent ? 'p' : 'y'}">${byAgent ? 'held by your agent' : 'held by you'}</span></div>
     <p class="muted small">${esc(p.token)} · holder <span class="mono">${esc(p.holder)}</span></p>
@@ -102,18 +143,35 @@ function planRow([id, p], agents) {
       <div class="stat good"><b>${p.releases}</b><span>Released</span></div>
       <div class="stat bad"><b>${p.busted}</b><span>Busted</span></div>
     </div>
-    <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR.${p.log_skipped ? ` <b>${p.log_skipped} event(s) aren't in its log because the budget ran out.</b>` : ''} <button class="btn ghost d-topup">Top up</button></p>
+    <p class="dev-next"><b>Next:</b> ${nextStep(p, byAgent)}</p>
     ${sealedBlock(id, p)}
     ${opensIn ? `<p class="muted small">Nothing can leave for another ${opensIn}s.</p>` : ''}
-    ${p.pending_holder ? `<p class="small"><b>New holder pending:</b> <span class="mono">${esc(p.pending_holder.holder)}</span> at ${new Date(Number(p.pending_holder.effective_at) / 1e6).toLocaleTimeString()}.</p>` : ''}
-    ${p.pending ? `<p class="small"><b>Loosening pending:</b> cap to ${M(p.pending.cap)} at ${new Date(Number(p.pending.effective_at) / 1e6).toLocaleTimeString()}. Everyone can see it.</p>` : ''}
     <div class="dev-actions">
-      <label>Put tokens in<input class="d-in" inputmode="numeric" placeholder="tokens, e.g. 20000000"></label><button class="btn ghost d-deposit">Deposit</button>
-      ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : `<label>Release<input class="d-amt" inputmode="numeric" placeholder="tokens, e.g. 50000000"></label><button class="btn d-release">Ask to release</button>`}
-      ${p.beneficiary === me ? (p.pending_holder ? (Date.now() * 1e6 >= Number(p.pending_holder.effective_at) ? '<button class="btn ghost d-holder-apply">Make the new holder official</button>' : '<button class="btn ghost d-holder-cancel">Cancel the new holder</button>') : '<button class="btn ghost d-holder">Replace the holder</button>') : ''}
-      ${!p.loosen_allowed ? '<p class="muted small" style="grid-column:1/-1">Launched to never loosen: no one can ever raise this cap.</p>' : p.pending ? `<button class="btn ghost d-cancel">Cancel the loosening</button>` : `<button class="btn ghost d-loosen">Propose a looser cap</button>`}
+      ${empty ? deposit : ''}
+      ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : empty ? '' : `<label>Ask to release, in millions (${M(p.released_in_period)} of ${M(p.cap)} used this period)<input class="d-amt" inputmode="decimal" placeholder="1"></label><button class="btn d-release">Ask to release</button>`}
     </div>
+    ${changeRules(id, p)}
+    <details class="dev-more" data-more="fine-${id}"><summary class="muted small">More about this plan</summary>
+      ${empty ? '' : `<p class="muted small">A launched coin's bag starts inside its plan, so you don't need this unless you want to add more.</p><div class="dev-actions">${deposit}</div>`}
+      <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR. <button class="btn ghost d-topup">Top up</button></p>
+    </details>
+    ${p.log_skipped ? `<p class="small"><b>${p.log_skipped} event(s) aren't in its log because the budget ran out.</b> Top it up under "More about this plan".</p>` : ''}
   </div>`;
+}
+
+// One tick only redraws what changed, and what you typed or opened survives it.
+let plansShown = null;
+function showPlans(html) {
+  if (html === plansShown) return;
+  const box = $('dev-plans');
+  const typed = [...box.querySelectorAll('input')].map((i) => [i.closest('.dev-plan')?.dataset.plan, i.className, i.value]).filter(([, , v]) => v);
+  const open = [...box.querySelectorAll('details[open]')].map((d) => d.dataset.more);
+  const focused = document.activeElement?.closest?.('#dev-plans') ? [document.activeElement.closest('.dev-plan')?.dataset.plan, document.activeElement.className] : null;
+  box.innerHTML = html;
+  plansShown = html;
+  for (const [plan, cls, v] of typed) { const el = box.querySelector(`.dev-plan[data-plan="${plan}"] input.${cls.split(' ')[0]}`); if (el) el.value = v; }
+  for (const m of open) { const d = box.querySelector(`details[data-more="${m}"]`); if (d) d.open = true; }
+  if (focused) box.querySelector(`.dev-plan[data-plan="${focused[0]}"] .${focused[1].split(' ')[0]}`)?.focus();
 }
 
 async function render() {
@@ -126,8 +184,8 @@ async function render() {
     // anyone can make a plan and then hand it to you as holder, so those wait under their own heading
     const mine = s.plans.filter(([, p]) => p.beneficiary === me).sort((a, b) => b[0] - a[0]);
     const naming = s.plans.filter(([, p]) => p.beneficiary !== me).sort((a, b) => b[0] - a[0]);
-    $('dev-plans').innerHTML = (mine.length ? mine.map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Make one above.</p>')
-      + (naming.length ? `<details style="grid-column:1/-1"><summary class="muted">${naming.length} plan(s) someone else made that name you as holder</summary>${naming.map((x) => planRow(x, s.agents)).join('')}</details>` : '');
+    showPlans((mine.length ? mine.map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Launch a coin above.</p>')
+      + (naming.length ? `<details style="grid-column:1/-1"><summary class="muted">${naming.length} plan(s) someone else made that name you as holder</summary>${naming.map((x) => planRow(x, s.agents)).join('')}</details>` : ''));
     // the agents you hired: show their keys straight from the chain
     const rows = await Promise.all(s.agents.map(async ({ agent: a }) => {
       const keys = await keysOf(a);
@@ -236,18 +294,22 @@ async function onPlanClick(e) {
   const card = e.target.closest('.dev-plan'); if (!card) return;
   const id = Number(card.dataset.plan);
   const p = await view(PLAN, 'get_plan', { plan_id: id });
+  const millions = (sel) => { const n = Number(card.querySelector(sel)?.value); return n > 0 ? BigInt(Math.round(n * 1e6)) * 1_000_000n : null; };
   if (e.target.classList.contains('d-deposit')) {
-    const n = Number(card.querySelector('.d-in').value); if (!(n > 0)) return status('How many tokens?', true);
-    await send([{ receiverId: p.token, actions: [fc('ft_transfer_call', { receiver_id: PLAN, amount: tokens(n), msg: String(id) }, 150, 1n)] }], 'Putting tokens in');
+    const amount = millions('.d-in'); if (!amount) return status('How many tokens, in millions? Type a number in the box first.', true);
+    await send([{ receiverId: p.token, actions: [fc('ft_transfer_call', { receiver_id: PLAN, amount: amount.toString(), msg: String(id) }, 150, 1n)] }], 'Putting tokens in');
   }
   if (e.target.classList.contains('d-release')) {
-    const n = Number(card.querySelector('.d-amt').value); if (!(n > 0)) return status('How many tokens?', true);
-    await send([{ receiverId: PLAN, actions: [fc('request_release', { plan_id: id, amount: tokens(n) }, p.sealed ? 280 : 100)] }], 'Asking to release');
+    const amount = millions('.d-amt'); if (!amount) return status('How many tokens, in millions? Type a number in the box first.', true);
+    if (amount > BigInt(p.balance)) return status(`This plan only holds ${M(p.balance)}. To get Busted, ask for more than the cap of ${M(p.cap)} but no more than ${M(p.balance)}.`, true);
+    await send([{ receiverId: PLAN, actions: [fc('request_release', { plan_id: id, amount: amount.toString() }, p.sealed ? 280 : 100)] }], 'Asking to release');
   }
   if (e.target.classList.contains('d-loosen')) {
-    const n = Number(prompt('New cap a period, in millions (it must be bigger than now):', String(Number(BigInt(p.cap) / 10n ** 12n) * 2)));
-    if (n > 0) await send([{ receiverId: PLAN, actions: [fc('propose_loosen', { plan_id: id, cap: tokens(n * 1e6) }, 50)] }], 'Proposing a looser cap');
+    const amount = millions('.d-loosen-to'); if (!amount) return status('What should the new cap be, in millions?', true);
+    if (amount <= BigInt(p.cap)) return status(`Raising it means more than the ${M(p.cap)} it is now.`, true);
+    await send([{ receiverId: PLAN, actions: [fc('propose_loosen', { plan_id: id, cap: amount.toString() }, 50)] }], 'Proposing a higher cap');
   }
+  if (e.target.classList.contains('d-loosen-apply')) await send([{ receiverId: PLAN, actions: [fc('apply_loosen', { plan_id: id }, 50)] }], 'Making the higher cap official');
   if (e.target.classList.contains('d-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_loosen', { plan_id: id }, 50)] }], 'Cancelling the loosening');
   if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token, ticket: (keep.get(`cpn.agents.${me}`) || []).find((a) => a.agent === p.holder)?.ticket });
   const secret = p.sealed && sealedStore()[p.sealed.commitment];
@@ -270,8 +332,10 @@ async function onPlanClick(e) {
   }
   if (e.target.classList.contains('d-topup')) await send([{ receiverId: PLAN, actions: [fc('fund_judge', { plan_id: id }, 30, NEAR(0.05))] }], 'Topping up the plan');
   if (e.target.classList.contains('d-holder')) {
-    const who = (prompt('Which account should hold this plan? It takes over after the public notice, and you can cancel until then.') || '').trim();
-    if (who) await send([{ receiverId: PLAN, actions: [fc('propose_holder', { plan_id: id, holder: who }, 50, NEAR(0.002))] }], 'Proposing a new holder');
+    const who = card.querySelector('.d-holder-to')?.value.trim().toLowerCase();
+    if (!/^[a-z0-9_.-]{2,64}$/.test(who || '')) return status('Which account should hold this plan? Something like someone.testnet.', true);
+    if (who === p.holder) return status('That account is already the holder.', true);
+    await send([{ receiverId: PLAN, actions: [fc('propose_holder', { plan_id: id, holder: who }, 50, NEAR(0.002))] }], 'Proposing a new holder');
   }
   if (e.target.classList.contains('d-holder-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_holder', { plan_id: id }, 50)] }], 'Cancelling the new holder');
   if (e.target.classList.contains('d-holder-apply')) await send([{ receiverId: PLAN, actions: [fc('apply_holder', { plan_id: id }, 50)] }], 'Making the new holder official');
@@ -280,7 +344,9 @@ async function onPlanClick(e) {
 async function main() {
   selector = await setupWalletSelector({ network: 'testnet', modules: [setupMeteorWallet(), setupHereWallet(), setupIntearWallet()] });
   modal = setupModal(selector, { contractId: PLAN });
-  const sync = () => { me = selector.store.getState().accounts[0]?.accountId ?? null; render(); window.dispatchEvent(new Event('cpn-wallet')); };
+  // ?as=account shows that account's plans read-only, for anyone checking what a dev did
+  const viewAs = new URLSearchParams(location.search).get('as');
+  const sync = () => { me = selector.store.getState().accounts[0]?.accountId ?? viewAs; render(); window.dispatchEvent(new Event('cpn-wallet')); };
   selector.store.observable.subscribe(sync);
   sync();
   $('dev-connect').onclick = async () => { if (me) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
@@ -290,5 +356,11 @@ async function main() {
   $('dev-balances').onclick = (e) => { const b = e.target.closest('.d-open'); if (b) window.cpnMarketOpen?.(b.dataset.coin); };
   $('dev-plans').onclick = (e) => onPlanClick(e).catch((err) => status(err.message, true));
   setInterval(() => me && render(), 8000);
+  // the notice counts down on screen, and the page redraws the moment an action becomes possible
+  setInterval(() => {
+    let due = false;
+    for (const el of document.querySelectorAll('[data-until]')) { const left = secsUntil(el.dataset.until); el.textContent = `${left}s`; if (left === 0) due = true; }
+    if (due) render();
+  }, 1000);
 }
 main();

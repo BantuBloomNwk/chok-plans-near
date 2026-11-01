@@ -144,6 +144,11 @@
   .dev-plans { display: grid; gap: 12px; }
   @media (min-width: 900px) { .dev-plans { grid-template-columns: 1fr 1fr; } }
   .dev-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+  .dev-guide { margin: 12px 0; padding-left: 22px; font-size: .95rem; color: var(--muted); } .dev-guide b { color: var(--ink); } .dev-guide li { margin: 3px 0; }
+  .dev-toast { position: sticky; top: 66px; z-index: 12; margin: 10px 0; padding: 8px 12px; border-radius: 12px; background: var(--card); border: 2px solid var(--danfo); color: var(--ink); font-weight: 700; }
+  .dev-toast.err { border-color: var(--siren); }
+  .dev-next { margin: 8px 0 10px; padding: 8px 12px; border-radius: 12px; background: var(--sunk); border-left: 4px solid var(--danfo); font-size: .92rem; }
+  .dev-more { margin-top: 10px; border-top: 1px dashed var(--rule); padding-top: 8px; font-size: .92rem; } .dev-more summary { cursor: pointer; } .dev-more hr { border: 0; border-top: 1px solid var(--rule); margin: 10px 0; } .dev-more .btn { margin: 4px 4px 0 0; }
   .dev-actions label { font-weight: 700; font-size: .85rem; }
   .dev-actions input { width: 100%; font: 600 .95rem "Baloo 2", sans-serif; padding: 8px 10px; border-radius: 10px; border: 2px solid var(--rule); background: var(--sunk); color: var(--ink); }
   .dev-actions .d-agent, .dev-actions .d-loosen, .dev-actions .d-cancel { grid-column: 1 / -1; justify-content: center; }
@@ -241,7 +246,8 @@
   <h2>Be the dev <span class="tag y" style="vertical-align:middle">your wallet signs</span></h2>
   <p class="muted" style="margin:0 0 12px">Connect a NEAR testnet wallet (<a href="https://wallet.meteorwallet.app" target="_blank" rel="noreferrer">Meteor</a> works, and it can make you a testnet account) and do it for real. You launch the coin, you set its plan's terms, and you get Busted by your own signature. You can hire an agent to hold the plan: your wallet creates its account with one key that can only call <span class="mono">request_release</span>. Our server makes and keeps that key so the agent can act for you, and only you get the ticket to give it orders.</p>
   <button class="btn" id="dev-connect">Connect a NEAR testnet wallet</button>
-  <p id="dev-status" class="muted" style="margin:10px 0 0"></p>
+  <ol class="dev-guide"><li><b>Connect</b> your wallet.</li><li><b>Launch</b> a coin in the cards below, with your plan's terms. Your 20% goes straight into the plan, so there's nothing to deposit.</li><li>Under <b>Your plans</b>, ask to release <b>more than the cap</b> and get Busted. Then ask for <b>less</b>, and it reaches your wallet. Each plan tells you what's next.</li><li>Open <b>Trade</b> to buy and sell your coin. Your wallet needs the coin to sell it.</li><li>Optional: launch one with <b>sealed rules</b>, or try <b>Change the rules</b> on a plan.</li></ol>
+  <p id="dev-status" class="muted dev-toast" hidden></p>
   <div id="dev-steps" hidden>
     <div class="dev-grid">
       <div class="card launch">
@@ -260,13 +266,11 @@
         <h3>2 · Launch your coin</h3>
         <p class="muted small">One transaction: the coin with no keys, 80% on sale in the market, your 20% in the plan, with your terms. You never hold your share loose. Your wallet pays about 2.3 NEAR if it has it; if not, it signs a free message and we pay. <a href="https://docs.near.org/getting-started/faucet" target="_blank" rel="noreferrer">Testnet NEAR is here.</a></p>
         <div class="launch" style="margin-top:12px"><label>Your coin's name<input id="dev-cname" maxlength="32" placeholder="Danfo Dog"></label><label>Ticker<input id="dev-csym" maxlength="8" placeholder="DANDOG"></label><button class="btn" id="dev-mycoin">Launch it</button></div>
-        <p class="muted small" style="margin-top:14px">Or try a plan on the demo coin first:</p>
-        <button class="btn ghost" id="dev-faucet">Send me 25M BUSDOG</button> <button class="btn ghost" id="dev-make">Make a plan for BUSDOG</button>
+        <details style="margin-top:14px"><summary class="muted small">Or try a plan without launching: first take demo tokens, make a plan, then deposit them into it</summary><p style="margin:8px 0 0"><button class="btn ghost" id="dev-faucet">1 · Send me 25M BUSDOG</button> <button class="btn ghost" id="dev-make">2 · Make a plan for BUSDOG</button></p></details>
         <div id="dev-balances" style="margin-top:10px"></div>
       </div>
     </div>
     <h3 style="margin:20px 0 8px">3 · Your plans</h3>
-    <p class="muted small" style="margin-top:0">Ask for more than the cap and watch it get refused and recorded. Propose a looser cap or a new holder and see it wait in public, then cancel it.</p>
     <div id="dev-plans" class="dev-plans"></div>
     <h3 style="margin:20px 0 8px">Your agents, read from the chain</h3>
     <div id="dev-agents"></div>
