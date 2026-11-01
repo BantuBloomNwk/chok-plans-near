@@ -89,8 +89,15 @@
   .mk-big { font-size: 1.6rem; font-weight: 800; color: var(--danfo); }
   .mk-px-big { font-size: 1.5rem; font-weight: 800; margin: 2px 0 6px; } .mk-px-big b { font-size: .9rem; margin-left: 6px; } .up { color: var(--kept); } .down { color: var(--siren); }
   .mk-facts { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .86rem; margin: 4px 0; } .mk-facts a { color: var(--ink); }
-  .mk-chart { margin: 10px 0 4px; background: var(--sunk); border-radius: 14px; padding: 8px; } .mk-chart svg { width: 100%; height: 240px; display: block; }
-  .mk-axis { display: flex; justify-content: space-between; font-size: .74rem; padding: 2px 4px 0; } .ring { display: inline-block; width: 9px; height: 9px; border: 2px solid var(--danfo); border-radius: 50%; vertical-align: -1px; }
+  .mk-chart { margin: 10px 0 4px; background: var(--sunk); border: 1.5px solid var(--rule); border-radius: 14px; padding: 8px 8px 4px; }
+  .mk-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .mk-seg { display: inline-flex; background: var(--card); border: 1.5px solid var(--rule); border-radius: 10px; padding: 2px; }
+  .mk-seg button { cursor: pointer; border: 0; background: none; color: var(--muted); font: 700 .78rem "Baloo 2", sans-serif; padding: 3px 9px; border-radius: 8px; }
+  .mk-seg button.on { background: var(--rule); color: var(--ink); } .mk-seg.off { opacity: .4; pointer-events: none; }
+  .mk-unit { margin-left: auto; font-size: .74rem; }
+  .mk-readout { display: flex; flex-wrap: wrap; gap: 2px 12px; font: .74rem "JetBrains Mono", ui-monospace, monospace; color: var(--muted); min-height: 1.4em; padding: 0 2px 4px; }
+  .mk-readout b { color: var(--ink); font-weight: 700; } .mk-readout b.up { color: var(--kept); } .mk-readout b.down { color: var(--siren); }
+  .mk-canvas { height: 300px; } @media (max-width: 600px) { .mk-canvas { height: 240px; } }
   .mk-tape { list-style: none; margin: 8px 0 0; padding: 0; font-size: .82rem; max-height: 260px; overflow: auto; }
   .mk-tape li { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto auto 34px; gap: 10px; padding: 5px 2px; border-bottom: 1px solid var(--rule); align-items: baseline; }
   .mk-tape .s { font-weight: 800; } .mk-tape .buy .s { color: var(--kept); } .mk-tape .sell .s { color: var(--siren); }

@@ -108,7 +108,7 @@ async function detail() {
       <span>${keys === 0 ? '✓ the coin has no keys, so nobody can change it' : keys == null ? '' : `⚠ the coin still has ${keys} key(s)`}</span>
       <span>creator <span class="mono">${esc(short(p.creator))}</span> earns the 1% fee</span>
     </div>`;
-  chart(trades, p, devs);
+  await chart(trades, p, devs);
   $('mk-tape').innerHTML = trades.length ? trades.slice().reverse().slice(0, 40).map((t) => `<li class="${t.buy ? 'buy' : 'sell'}${devs.has(t.trader) ? ' dev' : ''}">
       <span class="s">${t.buy ? 'BUY' : 'SELL'}</span><span class="w mono">${devs.has(t.trader) ? '<em>dev</em> ' : ''}${esc(short(t.trader))}</span>
       <span>${near(t.near)} NEAR</span><span>${toks(t.tokens)}</span><span class="muted">${ago(Number(t.at_ms))}</span></li>`).join('') : '<li class="muted">No trades yet. Be the first.</li>';
@@ -120,31 +120,109 @@ async function detail() {
   await panel(p);
 }
 
-// price over time from the trade records; dev trades are ringed
-function chart(trades, p, devs) {
-  const W = 640, H = 240, pad = 8;
-  const pts = trades.map((t) => ({ t: Number(t.at_ms), p: Number(BigInt(t.price)) / 1e24, dev: devs.has(t.trader), buy: t.buy }));
-  const start = Number(p.listed_at);
-  const startPrice = 3e6 * 1e18 * 1e6 / (Number(p.sale_supply) * 1.25) / 1e24;
-  pts.unshift({ t: start, p: startPrice });
-  pts.push({ t: Math.max(Date.now(), pts[pts.length - 1].t + 1), p: Number(BigInt(p.price)) / 1e24, now: true });
-  // spaced by trade, not by clock, so a quiet hour doesn't squash a busy minute
-  pts.forEach((x, i) => { x.i = i; });
-  const t0 = pts[0].t;
-  let lo = Math.min(...pts.map((x) => x.p)), hi = Math.max(...pts.map((x) => x.p));
-  const span = Math.max(hi - lo, hi * 0.04);
-  lo -= span * 0.15; hi = lo + span * 1.3;
-  const X = (i) => pad + (i / (pts.length - 1 || 1)) * (W - 2 * pad);
-  const Y = (v) => H - pad - ((v - lo) / (hi - lo)) * (H - 2 * pad);
-  // a step line: the price holds until the next trade moves it
-  let d = `M${X(0)},${Y(pts[0].p)}`;
-  for (let i = 1; i < pts.length; i++) d += `H${X(i)}V${Y(pts[i].p)}`;
-  const up = pts[pts.length - 1].p >= pts[0].p;
-  $('mk-chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Price over time">
-    <defs><linearGradient id="mkg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${up ? 'var(--kept)' : 'var(--siren)'}" stop-opacity=".35"/><stop offset="1" stop-color="${up ? 'var(--kept)' : 'var(--siren)'}" stop-opacity="0"/></linearGradient></defs>
-    <path d="${d}V${H}H${X(0)}Z" fill="url(#mkg)"/><path d="${d}" fill="none" stroke="${up ? 'var(--kept)' : 'var(--siren)'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
-    ${pts.filter((x) => x.dev).map((x) => `<circle cx="${X(x.i)}" cy="${Y(x.p)}" r="6" fill="none" stroke="var(--danfo)" stroke-width="2.5" vector-effect="non-scaling-stroke"><title>the dev ${x.buy ? 'bought' : 'sold'}</title></circle>`).join('')}
-  </svg><div class="mk-axis muted"><span>listed ${ago(t0)} ago · ${trades.length} trades</span><span>${pts.some((x) => x.dev) ? '<i class="ring"></i> the dev traded' : ''}</span><span>now</span></div>`;
+// The chart: market cap in NEAR (price times the billion supply), the way launchpads show it,
+// as candles or a line, with volume underneath and the dev's own trades marked. Built from the
+// trade records the market contract keeps.
+const UP = '#3fbf86', DOWN = '#ec4b3b', DEV = '#f2c230';
+let lw = null, chartFor = null, mode = null, step = 60;
+// the chart library works in UTC; shift by the viewer's offset so its axis shows their own clock
+const TZ = -new Date().getTimezoneOffset() * 60;
+const mcap = (yoctoPerToken) => (Number(BigInt(yoctoPerToken)) / 1e24) * 1e9;
+const fmtCap = (v) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
+
+function series(trades, p) {
+  const start = { t: Math.floor(Number(p.listed_at) / 1000) + TZ, v: mcap(BigInt(3_000_000) * 10n ** 18n * 1_000_000n / (BigInt(p.sale_supply) * 5n / 4n)) };
+  const pts = trades.map((t) => ({ t: Math.floor(Number(t.at_ms) / 1000) + TZ, v: mcap(t.price), vol: Number(BigInt(t.near)) / 1e24, buy: t.buy, trader: t.trader }));
+  // candles: each opens where the last one closed, so there are no gaps in price
+  const candles = [], volume = [];
+  let last = start.v;
+  for (const x of [{ ...start, vol: 0, open: true }, ...pts]) {
+    const time = Math.floor(x.t / step) * step;
+    let c = candles[candles.length - 1];
+    if (!c || c.time !== time) { c = { time, open: last, high: last, low: last, close: last, vol: 0 }; candles.push(c); }
+    c.high = Math.max(c.high, x.v); c.low = Math.min(c.low, x.v); c.close = x.v; c.vol += x.vol;
+    last = x.v;
+  }
+  for (const c of candles) volume.push({ time: c.time, value: c.vol, color: c.close >= c.open ? 'rgba(63,191,134,.45)' : 'rgba(236,75,59,.45)' });
+  // the line: one point per second, the last trade in it
+  const line = [];
+  for (const x of [start, ...pts]) { if (line.length && line[line.length - 1].time === x.t) line[line.length - 1].value = x.v; else if (!line.length || x.t > line[line.length - 1].time) line.push({ time: x.t, value: x.v }); }
+  // per trade, for the line
+  const tradeVol = [];
+  for (const x of pts) { const v = { time: x.t, value: x.vol, color: x.buy ? 'rgba(63,191,134,.45)' : 'rgba(236,75,59,.45)' }; if (tradeVol.length && tradeVol[tradeVol.length - 1].time === x.t) tradeVol[tradeVol.length - 1].value += x.vol; else tradeVol.push(v); }
+  return { candles, volume, line, pts, tradeVol };
+}
+
+async function chart(trades, p, devs) {
+  const { createChart, CrosshairMode } = await import('lightweight-charts');
+  const box = $('mk-chart');
+  const fresh = chartFor !== picked;
+  if (fresh) {
+    if (lw) lw.chart.remove();
+    box.innerHTML = '<div class="mk-tools"><div class="mk-seg" id="mk-mode"><button data-m="candles">Candles</button><button data-m="line">Line</button></div><div class="mk-seg" id="mk-step"><button data-s="60">1m</button><button data-s="300">5m</button><button data-s="900">15m</button><button data-s="3600">1h</button></div><span class="mk-unit muted">market cap, NEAR</span></div><div class="mk-readout" id="mk-readout"></div><div class="mk-canvas" id="mk-canvas"></div>';
+    const c = createChart($('mk-canvas'), {
+      autoSize: true,
+      layout: { background: { color: '#0f0909' }, textColor: '#b9a990', fontFamily: '"JetBrains Mono", ui-monospace, monospace', fontSize: 11 },
+      grid: { vertLines: { color: 'rgba(59,43,40,.45)' }, horzLines: { color: 'rgba(59,43,40,.45)' } },
+      crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#6b5a50', labelBackgroundColor: '#3b2b28' }, horzLine: { color: '#6b5a50', labelBackgroundColor: '#3b2b28' } },
+      rightPriceScale: { borderColor: '#3b2b28', scaleMargins: { top: 0.12, bottom: 0.26 } },
+      timeScale: { borderColor: '#3b2b28', timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 14, minBarSpacing: 3 },
+      localization: { priceFormatter: fmtCap },
+      handleScale: { axisPressedMouseMove: true }, handleScroll: true,
+    });
+    const priceFormat = { type: 'custom', formatter: fmtCap, minMove: 0.001 };
+    const candle = c.addCandlestickSeries({ upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN, wickUpColor: UP, wickDownColor: DOWN, priceFormat });
+    const area = c.addAreaSeries({ lineColor: UP, lineWidth: 2, topColor: 'rgba(63,191,134,.28)', bottomColor: 'rgba(63,191,134,0)', priceFormat, lastValueVisible: true, crosshairMarkerRadius: 4 });
+    const vol = c.addHistogramSeries({ priceScaleId: 'vol', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
+    c.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 }, visible: false });
+    lw = { chart: c, candle, area, vol };
+    chartFor = picked;
+    mode = trades.length >= 8 ? 'candles' : 'line';
+    $('mk-mode').onclick = (e) => { const m = e.target.dataset.m; if (m) { mode = m; detail(); } };
+    $('mk-step').onclick = (e) => { const s = Number(e.target.dataset.s); if (s) { step = s; detail(); } };
+    c.subscribeCrosshairMove((param) => readout(param));
+  }
+  const d = series(trades, p);
+  lw.data = d;
+  lw.candle.applyOptions({ visible: mode === 'candles' });
+  lw.area.applyOptions({ visible: mode === 'line' });
+  lw.candle.setData(d.candles.map(({ vol, ...c }) => c));
+  lw.area.setData(d.line);
+  lw.vol.setData(mode === 'candles' ? d.volume : d.tradeVol);
+  // the dev's own trades, on whichever series is showing
+  const marks = d.pts.filter((x) => devs.has(x.trader)).map((x) => ({ time: mode === 'candles' ? Math.floor(x.t / step) * step : x.t, position: x.buy ? 'belowBar' : 'aboveBar', color: DEV, shape: x.buy ? 'arrowUp' : 'arrowDown', text: x.buy ? 'dev bought' : 'dev sold' }));
+  lw.candle.setMarkers(mode === 'candles' ? marks : []);
+  lw.area.setMarkers(mode === 'line' ? marks : []);
+  // the line turns red when the coin is below where it listed
+  const up = d.line[d.line.length - 1].value >= d.line[0].value;
+  lw.area.applyOptions({ lineColor: up ? UP : DOWN, topColor: up ? 'rgba(63,191,134,.4)' : 'rgba(236,75,59,.4)', bottomColor: 'rgba(0,0,0,0)' });
+  for (const b of $('mk-mode').children) b.classList.toggle('on', b.dataset.m === mode);
+  for (const b of $('mk-step').children) b.classList.toggle('on', Number(b.dataset.s) === step);
+  $('mk-step').classList.toggle('off', mode !== 'candles');
+  if (fresh) lw.chart.timeScale().fitContent();
+  readout({});
+}
+
+// the numbers under the pointer, or the latest when the pointer is away
+function readout(param) {
+  const el = $('mk-readout');
+  if (!lw?.data || !el) return;
+  const d = lw.data;
+  const t = param?.time;
+  el.textContent = '';
+  const add = (label, value, cls) => { const s = document.createElement('span'); const b = document.createElement('b'); b.textContent = value; if (cls) b.className = cls; s.append(label + ' ', b); el.append(s); };
+  if (mode === 'candles') {
+    const c = (t != null && d.candles.find((x) => x.time === t)) || d.candles[d.candles.length - 1];
+    const cls = c.close >= c.open ? 'up' : 'down';
+    add('O', fmtCap(c.open), cls); add('H', fmtCap(c.high), cls); add('L', fmtCap(c.low), cls); add('C', fmtCap(c.close), cls);
+    add('Vol', `${c.vol.toFixed(3)} NEAR`);
+    const ch = ((c.close - c.open) / c.open) * 100;
+    add('', `${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%`, cls);
+  } else {
+    const x = (t != null && d.line.find((y) => y.time === t)) || d.line[d.line.length - 1];
+    add('Market cap', `${fmtCap(x.value)} NEAR`);
+    add('at', new Date((x.time - TZ) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+  }
 }
 
 let quoteTimer = null;
