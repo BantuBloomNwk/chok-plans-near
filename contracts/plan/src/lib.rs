@@ -14,6 +14,11 @@ use near_sdk::{env, log, near, require, AccountId, BorshStorageKey, Gas, NearTok
 const MAX_PENALTY_BPS: u16 = 5_000;
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_CALLBACK: Gas = Gas::from_tgas(10);
+const GAS_JUDGE: Gas = Gas::from_tgas(120);
+const GAS_VERDICT: Gas = Gas::from_tgas(60);
+/// What the plan contract pays OutLayer per judged request, from its own balance (an agent's
+/// function-call key cannot attach a deposit). Unused funds come back.
+const JUDGE_DEPOSIT: NearToken = NearToken::from_millinear(50);
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -26,6 +31,22 @@ enum Key {
 pub struct Pending {
     pub cap: U128,
     pub effective_at: U64,
+}
+
+/// A sealed plan's judge: the dev's exact rules live only in an OutLayer secret, and this pins
+/// which code may judge by them and what they must hash to.
+#[near(serializers = [borsh, json])]
+#[derive(Clone)]
+pub struct Sealed {
+    /// sha256("chok-sealed-v1|max|earliest|gap|salt"), published when the plan is made.
+    pub commitment: String,
+    /// Where OutLayer fetches the judge, and the sha256 it must have.
+    pub judge_url: String,
+    pub judge_hash: String,
+    pub outlayer: AccountId,
+    /// Whose OutLayer secrets hold the rules, under which profile.
+    pub secrets_owner: AccountId,
+    pub secrets_profile: String,
 }
 
 #[near(serializers = [borsh, json])]
@@ -54,6 +75,11 @@ pub struct Plan {
     pub tightenings: u32,
     pub loosenings: u32,
     pub pending: Option<Pending>,
+    pub sealed: Option<Sealed>,
+    /// When the last release went out (ns), for the sealed judge's pacing rule.
+    pub last_release: U64,
+    /// A request out with the sealed judge, if any.
+    pub awaiting: Option<U128>,
 }
 
 #[derive(PanicOnDefault)]
@@ -61,6 +87,42 @@ pub struct Plan {
 pub struct Plans {
     plans: IterableMap<u32, Plan>,
     next_id: u32,
+}
+
+/// The public rules: rolls the period, then the plan's start date and its cap.
+fn public_refusal(plan: &mut Plan, amount: u128, now: u64) -> Option<&'static str> {
+    if now >= plan.period_start.0 + plan.period_ns.0 {
+        let periods = (now - plan.period_start.0) / plan.period_ns.0;
+        plan.period_start = U64(plan.period_start.0 + periods * plan.period_ns.0);
+        plan.released_in_period = U128(0);
+    }
+    if now < plan.not_before.0 {
+        Some("not yet")
+    } else if plan.released_in_period.0 + amount > plan.cap.0 {
+        Some("over the cap")
+    } else {
+        None
+    }
+}
+
+/// A refusal that is recorded, not reverted: Busted counts up and the cap tightens.
+fn bust(plan: &mut Plan, plan_id: u32, by: &AccountId, amount: U128, reason: &str) {
+    plan.busted += 1;
+    let old = plan.cap.0;
+    plan.cap = U128(old - old * plan.penalty_bps as u128 / 10_000);
+    event("busted", json!({ "plan": plan_id, "by": by, "asked": amount, "reason": reason, "cap_before": U128(old), "cap_after": plan.cap, "busted": plan.busted }));
+}
+
+fn release(plan: &mut Plan, plan_id: u32, by: &AccountId, amount: U128, now: u64) {
+    plan.released_in_period = U128(plan.released_in_period.0 + amount.0);
+    plan.released_total = U128(plan.released_total.0 + amount.0);
+    plan.balance = U128(plan.balance.0 - amount.0);
+    plan.releases += 1;
+    plan.last_release = U64(now);
+    event("released", json!({ "plan": plan_id, "by": by, "amount": amount, "to": plan.beneficiary, "released_in_period": plan.released_in_period, "cap": plan.cap }));
+    Promise::new(plan.token.clone())
+        .function_call("ft_transfer".to_string(), json!({ "receiver_id": plan.beneficiary, "amount": amount }).to_string().into_bytes(), NearToken::from_yoctonear(1), GAS_FT_TRANSFER)
+        .then(Promise::new(env::current_account_id()).function_call("on_released".to_string(), json!({ "plan_id": plan_id, "amount": amount }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_CALLBACK));
 }
 
 fn event(name: &str, data: near_sdk::serde_json::Value) {
@@ -88,6 +150,7 @@ impl Plans {
         start_in_secs: U64,
         notice_secs: U64,
         penalty_bps: u16,
+        sealed: Option<Sealed>,
     ) -> u32 {
         require!(cap.0 > 0, "the cap must be above zero");
         require!(period_secs.0 > 0 && notice_secs.0 > 0, "periods and notice must be longer than zero");
@@ -105,8 +168,9 @@ impl Plans {
             not_before: U64(now + start_in_secs.0 * 1_000_000_000),
             notice_ns: U64(notice_secs.0 * 1_000_000_000),
             penalty_bps, releases: 0, busted: 0, tightenings: 0, loosenings: 0, pending: None,
+            sealed, last_release: U64(0), awaiting: None,
         };
-        event("plan_created", json!({ "plan": id, "token": plan.token, "holder": plan.holder, "beneficiary": plan.beneficiary, "cap": plan.cap, "period_secs": period_secs, "not_before": plan.not_before, "penalty_bps": penalty_bps }));
+        event("plan_created", json!({ "plan": id, "token": plan.token, "holder": plan.holder, "beneficiary": plan.beneficiary, "cap": plan.cap, "period_secs": period_secs, "not_before": plan.not_before, "penalty_bps": penalty_bps, "sealed_commitment": plan.sealed.as_ref().map(|s| s.commitment.clone()), "judge_hash": plan.sealed.as_ref().map(|s| s.judge_hash.clone()) }));
         self.plans.insert(id, plan);
         self.plans.flush();
         let cost = env::storage_byte_cost().saturating_mul((env::storage_usage() - used_before) as u128);
@@ -125,43 +189,79 @@ impl Plans {
         PromiseOrValue::Value(U128(0))
     }
 
-    /// The holder asks to release `amount` to the beneficiary. Over the cap, or before the plan
-    /// opens: refused, recorded as Busted, and the cap tightens. Returns whether it was released.
+    /// The holder asks to release `amount` to the beneficiary. The public rules are checked first:
+    /// over the cap, or before the plan opens, is refused, recorded as Busted, and the cap
+    /// tightens. A sealed plan then sends the request to its judge in an OutLayer TEE, and the
+    /// verdict comes back to `on_verdict`. Returns whether it was released or sent to the judge.
     pub fn request_release(&mut self, plan_id: u32, amount: U128) -> bool {
         let caller = env::predecessor_account_id();
         let now = env::block_timestamp();
         let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
         require!(caller == plan.holder, "only the plan's holder can ask");
         require!(amount.0 > 0 && amount.0 <= plan.balance.0, "ask for more than zero and no more than the plan holds");
-        if now >= plan.period_start.0 + plan.period_ns.0 {
-            let periods = (now - plan.period_start.0) / plan.period_ns.0;
-            plan.period_start = U64(plan.period_start.0 + periods * plan.period_ns.0);
-            plan.released_in_period = U128(0);
-        }
-        let reason = if now < plan.not_before.0 {
-            Some("not yet")
-        } else if plan.released_in_period.0 + amount.0 > plan.cap.0 {
-            Some("over the cap")
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            plan.busted += 1;
-            let old = plan.cap.0;
-            plan.cap = U128(old - old * plan.penalty_bps as u128 / 10_000);
-            event("busted", json!({ "plan": plan_id, "by": caller, "asked": amount, "reason": reason, "cap_before": U128(old), "cap_after": plan.cap, "busted": plan.busted }));
+        require!(plan.awaiting.is_none(), "a request is already with the judge");
+        if let Some(reason) = public_refusal(plan, amount.0, now) {
+            bust(plan, plan_id, &caller, amount, reason);
             return false;
         }
-        plan.released_in_period = U128(plan.released_in_period.0 + amount.0);
-        plan.released_total = U128(plan.released_total.0 + amount.0);
-        plan.balance = U128(plan.balance.0 - amount.0);
-        plan.releases += 1;
-        event("released", json!({ "plan": plan_id, "by": caller, "amount": amount, "to": plan.beneficiary, "released_in_period": plan.released_in_period, "cap": plan.cap }));
-        let (token, to) = (plan.token.clone(), plan.beneficiary.clone());
-        Promise::new(token)
-            .function_call("ft_transfer".to_string(), json!({ "receiver_id": to, "amount": amount }).to_string().into_bytes(), NearToken::from_yoctonear(1), GAS_FT_TRANSFER)
-            .then(Promise::new(env::current_account_id()).function_call("on_released".to_string(), json!({ "plan_id": plan_id, "amount": amount }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_CALLBACK));
+        if let Some(sealed) = plan.sealed.clone() {
+            plan.awaiting = Some(amount);
+            event("sent_to_judge", json!({ "plan": plan_id, "by": caller, "asked": amount, "judge_hash": sealed.judge_hash }));
+            let input = json!({ "plan_id": plan_id, "amount": amount, "now_secs": now / 1_000_000_000, "last_release_secs": plan.last_release.0 / 1_000_000_000 }).to_string();
+            let args = json!({
+                "source": { "WasmUrl": { "url": sealed.judge_url, "hash": sealed.judge_hash, "build_target": "wasm32-wasip2" } },
+                "input_data": input,
+                "resource_limits": { "max_instructions": 1_000_000_000u64, "max_memory_mb": 64, "max_execution_seconds": 30 },
+                "secrets_ref": { "profile": sealed.secrets_profile, "account_id": sealed.secrets_owner },
+                "response_format": "Json",
+                "payer_account_id": env::current_account_id(),
+            });
+            Promise::new(sealed.outlayer)
+                .function_call("request_execution".to_string(), args.to_string().into_bytes(), JUDGE_DEPOSIT, GAS_JUDGE)
+                .then(Promise::new(env::current_account_id()).function_call("on_verdict".to_string(), json!({ "plan_id": plan_id, "amount": amount, "by": caller }).to_string().into_bytes(), NearToken::from_yoctonear(0), GAS_VERDICT));
+            return true;
+        }
+        release(plan, plan_id, &caller, amount, now);
         true
+    }
+
+    /// The sealed judge's verdict. It must carry the commitment the plan was made with, so the
+    /// rules that judged it are the rules the dev committed to; the public cap is checked again.
+    #[private]
+    pub fn on_verdict(&mut self, plan_id: u32, amount: U128, by: AccountId) {
+        let now = env::block_timestamp();
+        let plan = self.plans.get_mut(&plan_id).unwrap_or_else(|| env::panic_str("no such plan"));
+        plan.awaiting = None;
+        let sealed = plan.sealed.clone().unwrap_or_else(|| env::panic_str("not a sealed plan"));
+        let raw = match env::promise_result_checked(0, 4096) {
+            Ok(bytes) => bytes,
+            Err(_) => { event("judge_failed", json!({ "plan": plan_id, "asked": amount })); return; }
+        };
+        // OutLayer returns the program's stdout; with Json it may arrive as an object or as a JSON string of one
+        let mut v: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(&raw).unwrap_or(near_sdk::serde_json::Value::Null);
+        if let Some(inner) = v.as_str().and_then(|s| near_sdk::serde_json::from_str(s).ok()) { v = inner; }
+        if v.get("commitment").and_then(|c| c.as_str()) != Some(sealed.commitment.as_str()) || v.get("plan_id").and_then(|p| p.as_u64()) != Some(plan_id as u64) {
+            event("judge_mismatch", json!({ "plan": plan_id, "asked": amount }));
+            return;
+        }
+        let cleared = v.get("cleared").and_then(|c| c.as_bool()).unwrap_or(false);
+        let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("refused by the sealed rules").to_string();
+        if !cleared {
+            let reason: &'static str = match reason.as_str() {
+                "too early" => "sealed: too early",
+                "too soon after the last release" => "sealed: too soon after the last release",
+                "too large" => "sealed: too large",
+                _ => "sealed: refused",
+            };
+            bust(plan, plan_id, &by, amount, reason);
+            return;
+        }
+        if amount.0 > plan.balance.0 { event("judge_failed", json!({ "plan": plan_id, "asked": amount, "why": "balance moved" })); return; }
+        if let Some(reason) = public_refusal(plan, amount.0, now) {
+            bust(plan, plan_id, &by, amount, reason);
+            return;
+        }
+        release(plan, plan_id, &by, amount, now);
     }
 
     /// If the token transfer failed (say the beneficiary isn't registered), put everything back.
