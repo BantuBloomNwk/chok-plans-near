@@ -170,7 +170,7 @@
 
 <section id="play"><div class="wrap">
   <h2>Quick try <span class="tag g" style="vertical-align:middle">no wallet</span></h2>
-  <p class="muted" style="margin:0">Your plan has a public cap of 10 million a minute. It also has sealed rules of its own that we don't show you until you reveal them: a biggest single release (somewhere between 2M and 4M) and a minimum gap between releases (20 to 40 seconds). They're judged inside OutLayer's enclave. In this quick try our server makes the plan for you, so it can work your plan's rules out too.</p>
+  <p class="muted" style="margin:0">Your plan has a public cap of 10 million a minute. It also has sealed rules of its own that we don't show you until you reveal them: a biggest single release (somewhere between 2M and 4M) and a minimum gap between releases (20 to 40 seconds). They're judged inside OutLayer's enclave. In this quick try our server makes the plan for you, so it can work your plan's rules out too. For rules we never see, connect a wallet under "Be the dev" and seal your own.</p>
   <details class="card verified" id="verified"><summary><span class="tick" id="vf-tick">…</span> <b>Verified</b> <span class="muted" id="vf-sum">checking the model and the contracts…</span></summary><div id="vf-list"></div></details>
   <div class="play">
     <aside class="card plan-card">
@@ -252,6 +252,8 @@
         <label>Public notice before a loosening or a new holder, seconds (60 at least)<input id="dev-notice" inputmode="numeric" value="120"></label>
         <label class="agent-toggle" style="font-weight:700"><input type="checkbox" id="dev-loosen"> Allow loosening later, after the public notice. Your coin's headline will say so. Leave it off and nobody can ever raise the cap.</label>
         <div class="holder-pick"><label><input type="radio" name="dev-holder" value="me" checked> I hold it myself</label><label><input type="radio" name="dev-holder" value="agent"> Hire an agent to hold it</label></div>
+        <label class="agent-toggle" style="font-weight:700"><input type="checkbox" id="dev-seal"> Add sealed rules that nobody sees, not even us</label>
+        <div id="dev-seal-more" hidden><label>Most in one release, in millions<input id="dev-seal-max" inputmode="decimal" value="3"></label><label>Seconds between releases<input id="dev-seal-gap" inputmode="numeric" value="30"></label><p class="muted small">Your browser makes these rules with a random salt and encrypts them for OutLayer's enclave. Only a hash of them goes on chain, and our server never gets them. Your wallet signs one extra step after the launch.</p></div>
         <p class="muted small">The cap never drops below a tenth of what you set, however often it's Busted, so a holder gone bad can't freeze your bag. You can replace a holder after the public notice.</p>
       </div>
       <div class="card">
@@ -289,7 +291,7 @@
   <div class="tracks">
     <div class="track"><div class="ic">01</div><h3>Memecoins With Mechanics</h3>Over the cap is refused on chain, stamped, and the cap shrinks 20%, down to a floor. The launcher won't accept terms that let the bag out at once, unless the dev chose to allow loosening: then only after a public notice, and the coin's headline says so. Every coin is minted straight into the market and its plan in one transaction.</div>
     <div class="track"><div class="ic">02</div><h3>AI Security &amp; Defense</h3>Order the agent to steal or to change the rules. Its only key can make one call on one contract, so theft and rule changes are refused by NEAR before they run, and over-asking is refused by the plan.</div>
-    <div class="track"><div class="ic">03</div><h3>Privacy &amp; Private AI</h3>The release rules are sealed, even from the agent. A judge running on OutLayer's Intel TDX workers checks every request and answers with a rule name, never a value.</div>
+    <div class="track"><div class="ic">03</div><h3>Privacy &amp; Private AI</h3>The release rules are sealed, even from the agent, and a dev who seals their own from a wallet keeps them from us too. A judge running on OutLayer's Intel TDX workers checks every request and answers with a rule name, never a value.</div>
     <div class="track"><div class="ic">04</div><h3>Open Innovation</h3>Refusal as a public record, and a commitment you can check yourself after the reveal. A plan that started on Solana, now running on NEAR.</div>
   </div>
 </div></section>
@@ -535,6 +537,7 @@ $('chips').onclick = (e) => { const t = e.target.closest('.chip'); if (t) ask(t.
 $('say').onsubmit = (e) => { e.preventDefault(); const v = $('say-in').value; $('say-in').value = ''; ask(v); };
 main();
 </script>
+<script>document.getElementById('dev-seal').onchange = (e) => { document.getElementById('dev-seal-more').hidden = !e.target.checked; };</script>
 <script type="module" src="./src/dev.js"></script>
 <script type="module" src="./src/market.js"></script>
 </body>

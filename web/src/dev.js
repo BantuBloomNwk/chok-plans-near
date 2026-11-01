@@ -13,6 +13,7 @@ import { setupIntearWallet } from '@near-wallet-selector/intear-wallet';
 import { actionCreators } from '@near-js/transactions';
 import { PublicKey } from '@near-js/crypto';
 import S from '../../deployment.json';
+import { makeRules, commitmentOf, storeSecretArgs, newProfile } from './seal.js';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
 const RPC = 'https://test.rpc.fastnear.com';
@@ -78,6 +79,17 @@ async function state() {
   return { plans, coins: coins.map((c, i) => ({ coin: c, balance: balances[i] })), agents };
 }
 
+// what this browser knows about a sealed plan's rules, and what's left to do with them
+function sealedBlock(id, p) {
+  if (!p.sealed) return '';
+  const mine = sealedStore()[p.sealed.commitment];
+  if (p.revealed) return `<p class="small"><b>Sealed, now revealed:</b> at most ${M(p.revealed.max_per_release)} a release, ${p.revealed.min_gap_secs}s apart. The contract checked them against the commitment.</p>`;
+  if (!mine) return `<p class="muted small"><b>Sealed.</b> The rules aren't in this browser. Commitment <span class="mono">${esc(p.sealed.commitment.slice(0, 16))}…</span></p>`;
+  const rules = `at most ${M(mine.rules.max_per_release)} a release, ${mine.rules.min_gap_secs}s apart`;
+  if (!mine.stored) return `<p class="small"><b>One more step.</b> Your wallet stores your rules (${rules}), encrypted here for OutLayer's enclave. Until then every ask fails safely.</p><button class="btn d-seal">Seal the rules</button>`;
+  return `<p class="small"><b>Sealed by you:</b> ${rules}. Only this browser and the enclave know that. Lose them and you can't reveal, though the plan keeps working.</p><div class="dev-actions"><button class="btn ghost d-save">Save my rules</button><button class="btn ghost d-reveal">Reveal them on chain</button></div>`;
+}
+
 function planRow([id, p], agents) {
   const byAgent = p.holder !== me;
   const opensIn = Math.max(0, Math.round((Number(p.not_before) - Date.now() * 1e6) / 1e9));
@@ -91,6 +103,7 @@ function planRow([id, p], agents) {
       <div class="stat bad"><b>${p.busted}</b><span>Busted</span></div>
     </div>
     <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR.${p.log_skipped ? ` <b>${p.log_skipped} event(s) aren't in its log because the budget ran out.</b>` : ''} <button class="btn ghost d-topup">Top up</button></p>
+    ${sealedBlock(id, p)}
     ${opensIn ? `<p class="muted small">Nothing can leave for another ${opensIn}s.</p>` : ''}
     ${p.pending_holder ? `<p class="small"><b>New holder pending:</b> <span class="mono">${esc(p.pending_holder.holder)}</span> at ${new Date(Number(p.pending_holder.effective_at) / 1e6).toLocaleTimeString()}.</p>` : ''}
     ${p.pending ? `<p class="small"><b>Loosening pending:</b> cap to ${M(p.pending.cap)} at ${new Date(Number(p.pending.effective_at) / 1e6).toLocaleTimeString()}. Everyone can see it.</p>` : ''}
@@ -139,6 +152,21 @@ async function hireIfAsked() {
     actionCreators.addKey(PublicKey.fromString(a.publicKey), actionCreators.functionCallAccessKey(a.contract, [a.method], NEAR(0.45))),
   ] }] };
 }
+// Sealed rules made in this browser. They stay here (and in the file you can save), and go out only
+// encrypted for OutLayer's enclave. Nothing about them reaches our server.
+const sealedStore = () => keep.get(`cpn.sealed.${me}`) || {};
+const keepSealed = (commitment, entry) => keep.set(`cpn.sealed.${me}`, { ...sealedStore(), [commitment]: { ...sealedStore()[commitment], ...entry } });
+function newSealed() {
+  if (!$('dev-seal').checked) return null;
+  const max = Number($('dev-seal-max').value), gap = Number($('dev-seal-gap').value);
+  if (!(max > 0)) throw new Error('How much can leave in one release, in millions?');
+  if (!(gap >= 0)) throw new Error('How many seconds apart?');
+  const rules = makeRules({ maxPerRelease: (BigInt(Math.round(max * 1e6)) * 1_000_000n).toString(), minGapSecs: Math.round(gap) });
+  const commitment = commitmentOf(rules), profile = newProfile(), judgeHash = S.judges[0];
+  keepSealed(commitment, { rules, profile, stored: false });
+  return { commitment, judge_url: `https://chok-plans-near.netlify.app/judge/${judgeHash}.wasm`, judge_hash: judgeHash, outlayer: S.outlayer, secrets_owner: me, secrets_profile: profile };
+}
+
 // the launcher's limits, said here first so a launch isn't refused after a wallet prompt
 const termsFromForm = () => {
   const f = { cap: Number($('dev-cap').value || 20), penalty: Number($('dev-penalty').value || 20), notice: Number($('dev-notice').value || 120), loosen: $('dev-loosen').checked };
@@ -170,14 +198,17 @@ async function launch() {
   if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return status('Give it a name and a ticker of 2 to 8 letters or numbers.', true);
   if (new TextEncoder().encode(name).length > 32) return status('That name is too long: 32 bytes at most, and some letters take two or three.', true);
   const f = termsFromForm();
+  const sealed = newSealed();
   const { holder, txs } = await hireIfAsked();
-  const cost = BigInt(await view(LAUNCHER, 'launch_cost', {}));
+  // a sealed launch pays for some judged requests up front
+  const cost = BigInt(await view(LAUNCHER, 'launch_cost', {})) + (sealed ? NEAR(0.1) : 0n);
   const account = await rpc('query', { request_type: 'view_account', finality: 'optimistic', account_id: me });
   if (BigInt(account.amount) > cost + (txs.length ? NEAR(0.6) : NEAR(0.1))) {
     const capRaw = BigInt(Math.round(f.cap * 1e6)) * 1_000_000n;
-    const terms = { holder, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed: null, loosen_allowed: f.loosen };
+    const terms = { holder, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed, loosen_allowed: f.loosen };
     await send([...txs, { receiverId: LAUNCHER, actions: [fc('launch', { name, symbol, terms }, 280, cost)] }], `Launching $${symbol.toUpperCase()}`);
   } else {
+    if (sealed) throw new Error(`A sealed launch has to come from your own wallet, and it needs ${(Number(cost / 10n ** 21n) / 1000).toFixed(2)} NEAR. Testnet NEAR: https://docs.near.org/getting-started/faucet`);
     if (txs.length) await send(txs, 'Hiring your agent');
     status(`Your wallet is short of the ${(Number(cost / 10n ** 21n) / 1000).toFixed(2)} NEAR a launch costs. We'll pay if your wallet signs a message saying this launch is yours: it costs nothing.`);
     const terms = { capMillions: f.cap, penaltyBps: Math.round(f.penalty * 100), noticeSecs: f.notice, loosen: f.loosen, holder };
@@ -194,9 +225,10 @@ async function launch() {
 // a plan for tokens you already hold: the demo coin
 async function makePlan() {
   const f = termsFromForm();
+  const sealed = newSealed();
   const { holder, txs } = await hireIfAsked();
   const capRaw = BigInt(Math.round(f.cap * 1e6)) * 1_000_000n;
-  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token: BUSDOG, holder, beneficiary: me, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed: null, loosen_allowed: f.loosen }, 100, NEAR(0.05))] });
+  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token: BUSDOG, holder, beneficiary: me, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed, loosen_allowed: f.loosen }, 100, NEAR(sealed ? 0.1 : 0.05))] });
   await send(txs, holder !== me ? 'Hiring your agent and making the plan' : 'Making your plan');
 }
 
@@ -210,7 +242,7 @@ async function onPlanClick(e) {
   }
   if (e.target.classList.contains('d-release')) {
     const n = Number(card.querySelector('.d-amt').value); if (!(n > 0)) return status('How many tokens?', true);
-    await send([{ receiverId: PLAN, actions: [fc('request_release', { plan_id: id, amount: tokens(n) }, 100)] }], 'Asking to release');
+    await send([{ receiverId: PLAN, actions: [fc('request_release', { plan_id: id, amount: tokens(n) }, p.sealed ? 280 : 100)] }], 'Asking to release');
   }
   if (e.target.classList.contains('d-loosen')) {
     const n = Number(prompt('New cap a period, in millions (it must be bigger than now):', String(Number(BigInt(p.cap) / 10n ** 12n) * 2)));
@@ -218,6 +250,24 @@ async function onPlanClick(e) {
   }
   if (e.target.classList.contains('d-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_loosen', { plan_id: id }, 50)] }], 'Cancelling the loosening');
   if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token, ticket: (keep.get(`cpn.agents.${me}`) || []).find((a) => a.agent === p.holder)?.ticket });
+  const secret = p.sealed && sealedStore()[p.sealed.commitment];
+  if (e.target.classList.contains('d-seal') && secret) {
+    status('Encrypting your rules here…');
+    const args = await storeSecretArgs({ rules: secret.rules, planId: id, judgeHash: p.sealed.judge_hash, planContract: PLAN, owner: me, profile: p.sealed.secrets_profile, api: '/outlayer' });
+    await send([{ receiverId: S.outlayer, actions: [fc('store_secrets', args, 100, NEAR(0.1))] }], 'Storing your sealed rules');
+    keepSealed(p.sealed.commitment, { stored: true });
+    await render();
+  }
+  if (e.target.classList.contains('d-save') && secret) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({ plan: id, contract: PLAN, commitment: p.sealed.commitment, ...secret }, null, 2)], { type: 'application/json' }));
+    a.download = `chok-sealed-plan-${id}.json`;
+    a.click();
+  }
+  if (e.target.classList.contains('d-reveal') && secret) {
+    const r = secret.rules;
+    await send([{ receiverId: PLAN, actions: [fc('reveal', { plan_id: id, max_per_release: r.max_per_release, earliest: String(r.earliest), min_gap_secs: String(r.min_gap_secs), salt: r.salt }, 100)] }], 'Revealing your rules');
+  }
   if (e.target.classList.contains('d-topup')) await send([{ receiverId: PLAN, actions: [fc('fund_judge', { plan_id: id }, 30, NEAR(0.05))] }], 'Topping up the plan');
   if (e.target.classList.contains('d-holder')) {
     const who = (prompt('Which account should hold this plan? It takes over after the public notice, and you can cancel until then.') || '').trim();
@@ -238,7 +288,7 @@ async function main() {
   $('dev-mycoin').onclick = () => launch().catch((e) => status(e.message, true));
   $('dev-make').onclick = () => makePlan().catch((e) => status(e.message, true));
   $('dev-balances').onclick = (e) => { const b = e.target.closest('.d-open'); if (b) window.cpnMarketOpen?.(b.dataset.coin); };
-  $('dev-plans').onclick = (e) => onPlanClick(e).catch(() => {});
+  $('dev-plans').onclick = (e) => onPlanClick(e).catch((err) => status(err.message, true));
   setInterval(() => me && render(), 8000);
 }
 main();
