@@ -72,7 +72,7 @@ const tape = await view(M, 'get_trades', { token: coin });
 ok(tape.length === 3 && tape[0].buy && tape[1].buy && !tape[2].buy, `the contract keeps the trades: ${tape.map((t) => (t.buy ? 'buy' : 'sell')).join(', ')}`);
 
 // 7. outside coins and old routes can't list
-ok(await refused(() => call(dev, M, 'list_launched', { creator: S.dev, sale: '1000000' }), /only coins made by the launcher|promise result/i), 'our own dev account could not list itself as a coin');
+ok(await refused(() => call(dev, M, 'list_launched', { creator: S.dev, sale: '1000000' }), /only coins made by the launcher/), 'our own dev account could not list itself as a coin');
 const fanHas = await view(coin, 'ft_balance_of', { account_id: S.fan }), poolsBefore = (await view(M, 'list_pools', { limit: 200 })).length;
 await call(fan, coin, 'ft_transfer_call', { receiver_id: M, amount: '1000000', msg: '{"list":{}}' }, 1n).catch(() => {});
 await sleep(2000);
@@ -85,7 +85,6 @@ const before = await view(P, 'get_plan', { plan_id: pool.plan });
 await call(dev, P, 'request_release', { plan_id: pool.plan, amount: T(25_000_000).toString() });
 const afterBust = await view(P, 'get_plan', { plan_id: pool.plan });
 ok(afterBust.busted === before.busted + 1 && BigInt(afterBust.cap) === T(16_000_000), 'the dev asked for 25M over a 20M cap: Busted, and the cap is 16M');
-await call(dev, coin, 'storage_deposit', { account_id: S.dev }, N(0.0125));
 await call(dev, P, 'request_release', { plan_id: pool.plan, amount: T(16_000_000).toString() });
 await sleep(3000);
 ok(BigInt(await view(coin, 'ft_balance_of', { account_id: S.dev })) === T(16_000_000), 'then the dev got the 16M the plan allows');

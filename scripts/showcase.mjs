@@ -42,7 +42,7 @@ const [ada, bola, chidi, funke, musa] = traders;
 const steps = [
   () => buy(ada, 0.12), () => buy(bola, 0.25), () => buy(chidi, 0.08), () => sell(ada, 0.5), () => buy(funke, 0.3), () => buy(musa, 0.18),
   () => call(dev, S.plan, 'request_release', { plan_id: plan, amount: T(30_000_000).toString() }), // over the cap: Busted, and the cap drops to 16M
-  () => buy(ada, 0.15), () => sell(bola, 0.4), () => buy(chidi, 0.22), () => call(dev, coin, 'storage_deposit', { account_id: S.dev }, N(0.0125)),
+  () => buy(ada, 0.15), () => sell(bola, 0.4), () => buy(chidi, 0.22),
   () => call(dev, S.plan, 'request_release', { plan_id: plan, amount: T(10_000_000).toString() }), // inside the cap: it comes out
   () => call(dev, coin, 'ft_transfer_call', { receiver_id: S.market, amount: T(6_000_000).toString(), msg: '{"sell":{"min_out":"0"}}' }, 1n, 100_000_000_000_000n), // the dev sells, marked on the tape
   () => sell(funke, 0.6), () => buy(musa, 0.1), () => sell(chidi, 0.5), () => buy(bola, 0.2), () => buy(funke, 0.12), () => sell(ada, 0.3), () => buy(chidi, 0.16),

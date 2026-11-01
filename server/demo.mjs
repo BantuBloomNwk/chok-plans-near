@@ -57,7 +57,9 @@ function rulesFor(planId) {
 let queue = Promise.resolve();
 const serial = (f) => { const p = queue.then(f, f); queue = p.catch(() => {}); return p; };
 
-const PUBLIC_CAP = 10_000_000, IN_PLAN = 20_000_000;
+const PUBLIC_CAP = 10_000_000, IN_PLAN = 20_000_000, FAUCET_DRAW = 25_000_000;
+// the faucet stops here, so a visitor taking tokens can't stop the next visitor getting a plan
+const PLAN_RESERVE = 200_000_000;
 // the demo coin has a fixed supply, so say so plainly when the dev has run out instead of a wasm trap
 async function needCoins(n, coin = S.coin) {
   const have = BigInt(await view(coin, 'ft_balance_of', { account_id: S.dev }));
@@ -118,16 +120,17 @@ setTimeout(() => refill().catch((e) => console.log('refill', e.message)), 60_000
 // goes to the dev. Runs when the dev is low, so the playground never runs dry.
 async function recycle() {
   if (BigInt(await view(S.coin, 'ft_balance_of', { account_id: S.dev })) >= BigInt(tokens(200_000_000))) return;
-  const plans = await view(S.plan, 'plans_of', { account: S.agent });
   const now = BigInt(Date.now()) * 1_000_000n;
-  for (const [id, p] of plans) {
-    const idle = !db.plans[id] || Date.now() - db.plans[id].made > 3_600_000;
-    // only the playground's own BUSDOG plans: a launched coin's dev bag moves only when someone asks
-    if (p.token !== S.coin || p.holder !== S.agent || p.awaiting || BigInt(p.balance) === 0n || !idle) continue;
+  // only plans this server made: anyone can make a plan naming our agent, and those get nothing from us
+  for (const [key, known] of Object.entries(db.plans)) {
+    const id = Number(key);
+    if (Date.now() - known.made <= 3_600_000 || known.coin !== S.coin) continue;
+    const p = await view(S.plan, 'get_plan', { plan_id: id });
+    if (!p || p.holder !== S.agent || p.awaiting || BigInt(p.balance) === 0n) continue;
     await keepFunded(id, p);
     const r = rulesFor(id);
     const room = now - BigInt(p.period_start) >= BigInt(p.period_ns) ? BigInt(p.cap) : BigInt(p.cap) - BigInt(p.released_in_period);
-    const amount = ([BigInt(r.max_per_release), room, BigInt(p.balance)].reduce((a, b) => (a < b ? a : b)) / 1_000_000n) * 1_000_000n;
+    const amount = ([BigInt(r.max_per_release), room, BigInt(p.balance)].reduce((x, y) => (x < y ? x : y)) / 1_000_000n) * 1_000_000n;
     if (amount > 0n) await call(agent, S.plan, 'request_release', { plan_id: id, amount: amount.toString() }).catch(() => {});
   }
 }
@@ -200,7 +203,9 @@ async function tryIt(planId, coin, x, who) {
     const judged = logs.some((e) => e.event === 'sent_to_judge');
     let reason = logs.find((e) => e.event === 'busted')?.data[0].reason ?? null;
     if (!reason && p.busted > before.busted) reason = 'refused by a sealed rule';
-    const outcome = p.releases > before.releases ? 'released' : p.busted > before.busted ? 'busted' : 'no verdict';
+    await sleep(1500); // a bounced release is put back a block or two after the event
+    p = await view(S.plan, 'get_plan', { plan_id: planId });
+    const outcome = p.releases > before.releases ? 'released' : p.busted > before.busted ? 'busted' : p.log_len > before.log_len ? 'bounced' : 'no verdict';
     if (outcome === 'busted' && judged) {
       // the verdict's own reason is in the callback receipt; read the final tree for it
       const tx = await near.connection.provider.txStatus(out.transaction.hash, who.accountId, 'FINAL').catch(() => null);
@@ -218,11 +223,12 @@ async function tryIt(planId, coin, x, who) {
 const planView = (p) => ({ balance: Number(BigInt(p.balance) / 1_000_000n), publicCapPerPeriod: Number(BigInt(p.cap) / 1_000_000n), periodSecs: Number(BigInt(p.period_ns) / 1_000_000_000n), releasedThisPeriod: Number(BigInt(p.released_in_period) / 1_000_000n), releases: p.releases, busted: p.busted, sealed: !!p.sealed });
 
 // the model if we have one, the rule parser if not; either way every try goes through attempt()
-async function ask(planId, coin, text, who) {
+async function ask(planId, coin, text, who, brainOff = false) {
   const p = await view(S.plan, 'get_plan', { plan_id: planId });
   if (p.sealed && who === agent) await keepFunded(planId, p);
   let fallback = 'no model key on this server';
-  if (AI_KEY) {
+  if (brainOff) fallback = 'you asked for the model to be switched off, so nothing can talk it out of trying';
+  else if (AI_KEY) {
     try {
       const results = [];
       const run = await think({
@@ -276,10 +282,30 @@ async function launchCoin(name, symbol) {
 async function sponsorLaunch(owner, name, symbol, t) {
   const cost = await launchCost();
   const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? Math.floor(n) : d; };
-  const capM = num(t.capMillions, 1, 200, 20), bps = num(t.penaltyBps, 1, 5000, 2000);
-  const terms = { holder: acctId(t.holder || owner), cap: tokens(capM * 1e6), min_cap: tokens(Math.max(1, capM / 10) * 1e6), period_secs: '60', start_in_secs: '0', notice_secs: String(num(t.noticeSecs, 30, 86400, 120)), penalty_bps: bps, sealed: null, loosen_allowed: !!t.loosen };
+  const capM = num(t.capMillions, 1, 20, 20), bps = num(t.penaltyBps, 1, 5000, 2000);
+  const terms = { holder: acctId(t.holder || owner), cap: tokens(capM * 1e6), min_cap: tokens(Math.max(1, capM / 10) * 1e6), period_secs: '60', start_in_secs: '0', notice_secs: String(num(t.noticeSecs, 60, 86400, 120)), penalty_bps: bps, sealed: null, loosen_allowed: !!t.loosen };
   const out = await call(dev, S.launcher, 'launch', { name: name.slice(0, 32), symbol, terms, dev: owner }, cost.toString());
   return { coin: coinIdOf(out), name, symbol: symbol.toUpperCase(), owner };
+}
+// NEP-413: the wallet signs a message off chain. The signature must check out, the message must say
+// what's being asked for, recently, and the key must be a full-access key of that very account.
+const usedNonces = new Set();
+export function nep413Hash({ message, nonce, recipient }) {
+  const str = (t) => { const b = Buffer.from(t, 'utf8'), n = Buffer.alloc(4); n.writeUInt32LE(b.length); return Buffer.concat([n, b]); };
+  const tag = Buffer.alloc(4); tag.writeUInt32LE(2147484061);
+  return crypto.createHash('sha256').update(Buffer.concat([tag, str(message), Buffer.from(nonce, 'base64'), str(recipient), Buffer.from([0])])).digest();
+}
+async function provesOwner(owner, what, proof) {
+  try {
+    const { publicKey, signature, message, nonce, recipient } = proof || {};
+    const [said, at] = String(message).split(' | ');
+    if (said !== `${what} as ${owner}` || recipient !== S.launcher || Math.abs(Date.now() - Number(at)) > 600_000 || Buffer.from(nonce, 'base64').length !== 32 || usedNonces.has(nonce)) return false;
+    if (!utils.PublicKey.from(publicKey).verify(nep413Hash({ message, nonce, recipient }), Buffer.from(signature, 'base64'))) return false;
+    const key = await near.connection.provider.query({ request_type: 'view_access_key', finality: 'final', account_id: owner, public_key: publicKey });
+    if (key.permission !== 'FullAccess') return false;
+    usedNonces.add(nonce);
+    return true;
+  } catch { return false; }
 }
 const acctId = (v) => { const a = String(v || '').trim().toLowerCase(); if (!/^[a-z0-9_.-]{2,64}\.testnet$/.test(a)) throw Object.assign(new Error('a testnet account, like you.testnet'), { status: 400 }); return a; };
 
@@ -302,7 +328,7 @@ http.createServer((req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/near/health') {
     const lows = { [S.dev]: REFILL_BELOW, [S.agent]: BigInt(utils.format.parseNearAmount('0.5')) };
-    return void Promise.all(Object.keys(lows).map(async (a) => [a, await nearOf(a)])).then((list) => json(res, 200, { balances: Object.fromEntries(list.map(([a, b]) => [a, utils.format.formatNearAmount(b.toString(), 3)])), low: list.filter(([a, b]) => b < lows[a]).map(([a]) => a) })).catch((e) => json(res, 500, { error: String(e.message) }));
+    return void Promise.all([...Object.keys(lows).map(async (a) => (await nearOf(a)) < lows[a]), view(S.coin, 'ft_balance_of', { account_id: S.dev }).then((b) => BigInt(b) < BigInt(tokens(PLAN_RESERVE)))]).then((list) => json(res, 200, { ok: !list.includes(true) })).catch(() => json(res, 500, { ok: false }));
   }
   if (req.method !== 'POST') return json(res, 404, { error: 'unknown path' });
   let raw = '';
@@ -323,11 +349,11 @@ http.createServer((req, res) => {
       const acct = acctId;
       if (url.pathname === '/near/faucet') {
         const to = acct(body.account);
-        if (!allow(`faucet:${ip}`, 3, 3_600_000) || !allow(`faucet:${to}`, 2, 86_400_000)) return json(res, 429, { error: 'That is enough BUSDOG for now.' });
-        await needCoins(50_000_000);
+        if (!allow(`faucet:${ip}`, 3, 3_600_000) || !allow(`faucet:${to}`, 2, 86_400_000) || !allow('faucet:all', 20, 86_400_000)) return json(res, 429, { error: 'That is enough BUSDOG for now.' });
+        await needCoins(FAUCET_DRAW + PLAN_RESERVE);
         await call(dev, S.coin, 'storage_deposit', { account_id: to }, utils.format.parseNearAmount('0.0125'));
-        const out = await call(dev, S.coin, 'ft_transfer', { receiver_id: to, amount: tokens(50_000_000) }, '1');
-        return json(res, 200, { coin: S.coin, amount: 50_000_000, tx: out.transaction.hash });
+        const out = await call(dev, S.coin, 'ft_transfer', { receiver_id: to, amount: tokens(FAUCET_DRAW) }, '1');
+        return json(res, 200, { coin: S.coin, amount: FAUCET_DRAW, tx: out.transaction.hash });
       }
       if (url.pathname === '/near/agent/new') {
         const owner = acct(body.owner);
@@ -341,13 +367,14 @@ http.createServer((req, res) => {
       if (url.pathname === '/near/my-coin') {
         const owner = acct(body.owner), name = String(body.name || '').trim(), symbol = String(body.symbol || '').trim();
         if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return json(res, 400, { error: 'Give it a name and a ticker of 2 to 8 letters or numbers.' });
-        if (!allow(`coin:${ip}`, 3, 3_600_000) || !allow('coin:all', COINS_A_DAY, 86_400_000)) return json(res, 429, { error: 'That is enough new coins for today.' });
+        if (!await provesOwner(owner, `Launch ${symbol.toUpperCase()}`, body.proof)) return json(res, 403, { error: 'We pay for a launch only if your wallet signs for it.' });
+        if (!allow(`coin:${ip}`, 3, 3_600_000) || !allow('sponsored:all', 15, 86_400_000)) return json(res, 429, { error: 'We have paid for enough launches today. A wallet with 2.4 NEAR can still launch: https://near-faucet.io/' });
         return json(res, 200, await sponsorLaunch(owner, name, symbol, body.terms || {}));
       }
       const planId = Number(body.plan);
       if (url.pathname === '/near/ask' && body.agent) {
         // a visitor's own agent on a visitor's own plan
-        if (!allow(`ask:${ip}`, 30, 600_000)) return json(res, 429, { error: 'Slow down a little.' });
+        if (!allow(`ask:${ip}`, 30, 600_000) || !allow('ask:all', 1500, 86_400_000)) return json(res, 429, { error: 'Slow down a little.' });
         // agent ids are public on chain, so knowing one proves nothing: the ticket from when it was hired does
         const id = String(body.agent);
         const f = agentFile(id);
@@ -355,14 +382,14 @@ http.createServer((req, res) => {
         const who = await agentAccount(id);
         const p = await view(S.plan, 'get_plan', { plan_id: planId });
         if (!p || p.holder !== who.accountId) return json(res, 400, { error: 'That agent does not hold that plan.' });
-        return json(res, 200, await ask(planId, p.token, body.text, who));
+        return json(res, 200, await ask(planId, p.token, body.text, who, body.brain === 'off'));
       }
       const known = db.plans[planId];
       if (!known) return json(res, 404, { error: 'Not a playground plan.' });
       if (!sameHash(known.ticket, hashed(body.ticket))) return json(res, 403, { error: 'This plan belongs to someone else. Get your own.' });
       if (url.pathname === '/near/ask') {
-        if (!allow(`ask:${ip}`, 30, 600_000)) return json(res, 429, { error: 'Slow down a little.' });
-        return json(res, 200, await ask(planId, known.coin, body.text, agent));
+        if (!allow(`ask:${ip}`, 30, 600_000) || !allow('ask:all', 1500, 86_400_000)) return json(res, 429, { error: 'Slow down a little.' });
+        return json(res, 200, await ask(planId, known.coin, body.text, agent, body.brain === 'off'));
       }
       if (url.pathname === '/near/reveal') {
         const { commitment, ...rules } = rulesFor(planId);
@@ -370,6 +397,7 @@ http.createServer((req, res) => {
         const p = await view(S.plan, 'get_plan', { plan_id: planId });
         let tx = null;
         if (!p.revealed) {
+          await keepFunded(planId, p);
           const out = await call(dev, S.plan, 'reveal', { plan_id: planId, max_per_release: rules.max_per_release, earliest: String(rules.earliest), min_gap_secs: String(rules.min_gap_secs), salt: rules.salt });
           tx = out.transaction.hash;
         }

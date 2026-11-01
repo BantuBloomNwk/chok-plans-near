@@ -28,7 +28,7 @@ export function renderHead(el, m) {
     <div class="tp-kv"><span>24h vol</span><b>${fmtCompact(day.volume)}</b></div>
     <div class="tp-kv"><span>Traders</span><b>${traders}</b></div>
     <div class="tp-kv"><span>All-time high</span><b>${fmtCompact(ath * m.supply)}</b></div>
-  </div>`;
+  </div>${m.planLine ?? ''}`;
   stampFaces(el);
 }
 
@@ -59,7 +59,7 @@ export function renderTabs(el, m, state) {
   el.innerHTML = `<div class="tp-tabs" role="tablist"><button data-t="trades" class="${state.tab === 'trades' ? 'on' : ''}">Trades<i>${m.trades.length}</i></button><button data-t="holders" class="${state.tab === 'holders' ? 'on' : ''}">Holders<i>${holding.length}</i></button></div>
     <div class="tp-wrap">${state.tab === 'trades'
       ? `<table class="tp-table"><thead><tr><th>Trader</th><th>Side</th><th>${q}</th><th>${esc(m.symbol)}</th><th>MCap</th><th>Age</th></tr></thead><tbody>${tape || '<tr><td colspan="6" class="muted">No trades yet. Be the first.</td></tr>'}</tbody></table>`
-      : `<table class="tp-table"><thead><tr><th>Holder</th><th>Held</th><th>% supply</th><th>Worth (${q})</th><th>Profit (${q})</th></tr></thead><tbody>${holders || '<tr><td colspan="5" class="muted">Nobody holds any from the market yet.</td></tr>'}</tbody></table><p class="tp-note">Worked out from market trades. Tokens someone was sent directly don't show here, and the plan's locked bag isn't a holder.</p>`}</div>`;
+      : `<table class="tp-table"><thead><tr><th>Holder</th><th>Held</th><th>% supply</th><th>Worth (${q})</th><th>Gain or loss (${q})</th></tr></thead><tbody>${holders || '<tr><td colspan="5" class="muted">Nobody holds any from the market yet.</td></tr>'}</tbody></table><p class="tp-note">Worked out from market trades. Tokens someone was sent directly don't show here, and the plan's locked bag isn't a holder.</p>`}</div>`;
   el.querySelector('.tp-tabs').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { state.tab = b.dataset.t; renderTabs(el, m, state); } };
   stampFaces(el);
 }

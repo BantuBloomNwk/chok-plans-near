@@ -145,7 +145,7 @@ const STUDIES = [
   ['VOL', 'Volume', 'pane'], ['VWAP', 'VWAP', 'main'], ['MA', 'Moving average', 'main'], ['EMA', 'Exponential MA', 'main'], ['BOLL', 'Bollinger bands', 'main'],
   ['RSI', 'RSI', 'pane'], ['MACD', 'MACD', 'pane'],
 ];
-const MARKERS = [['big', 'Big trades + dev'], ['all', 'All traders'], ['dev', 'Dev only'], ['off', 'Off']];
+const MARKERS = [['big', 'Big trades + dev'], ['all', 'All traders'], ['dev', 'Dev only'], ['off', 'No traders']];
 const RANGES = [['15m', 900], ['1h', 3600], ['6h', 21600], ['1D', 86400], ['All', null]];
 
 export function createTerminal(root, opts) {
@@ -155,6 +155,7 @@ export function createTerminal(root, opts) {
     show: keep.get('show', 'mcap'),
     type: keep.get('type', 'candle_solid'),
     markers: keep.get('markers', 'big'),
+    stamps: keep.get('stamps', true),
     axis: keep.get('axis', 'normal'),
     studies: keep.get('studies', ['VOL']),
     trades: [], marks: [], devs: new Set(), me: null, start: null, bars: [], live: null, capped: false, hits: [], paneIds: {},
@@ -166,7 +167,7 @@ export function createTerminal(root, opts) {
       <div class="term-seg" data-g="period" role="group" aria-label="Timeframe">${PERIODS.map((p) => `<button data-v="${p.id}">${p.id}</button>`).join('')}</div>
       <div class="term-seg" data-g="type" role="group" aria-label="Chart type">${TYPES.map(([v, l]) => `<button data-v="${v}">${l}</button>`).join('')}</div>
       <details class="term-menu" data-menu="studies"><summary>Indicators</summary><div>${STUDIES.map(([v, l]) => `<label><input type="checkbox" data-study="${v}"> ${l}</label>`).join('')}</div></details>
-      <details class="term-menu" data-menu="markers"><summary>Chart markers</summary><div>${MARKERS.map(([v, l]) => `<label><input type="radio" name="term-markers-${o.symbol}" data-markers="${v}"> ${l}</label>`).join('')}</div></details>
+      <details class="term-menu" data-menu="markers"><summary>Chart markers</summary><div>${MARKERS.map(([v, l]) => `<label><input type="radio" name="term-markers-${o.symbol}" data-markers="${v}"> ${l}</label>`).join('')}<label class="sep"><input type="checkbox" data-stamps> Plan stamps</label></div></details>
       <div class="term-toggle" data-g="show" role="group" aria-label="Show price or market cap"><button data-v="price">Price</button><i>/</i><button data-v="mcap">MCap</button></div>
       <span class="term-grow"></span>
       <button class="term-ic" data-a="now" title="Back to the latest candle">${svg('now')}</button>
@@ -227,7 +228,7 @@ export function createTerminal(root, opts) {
       },
       overlay: {
         line: { color: DEV }, point: { color: DEV, borderColor: 'rgba(242,194,48,.35)', activeColor: DEV, activeBorderColor: 'rgba(242,194,48,.35)' },
-        text: { color: DEV }, rect: { color: 'rgba(242,194,48,.08)', borderColor: DEV }, polygon: { color: 'rgba(242,194,48,.08)', borderColor: DEV },
+        text: { color: DEV }, rectText: { color: '#1d1206', backgroundColor: DEV, borderColor: DEV }, rect: { color: 'rgba(242,194,48,.08)', borderColor: DEV }, polygon: { color: 'rgba(242,194,48,.08)', borderColor: DEV },
       },
     },
   });
@@ -246,7 +247,7 @@ export function createTerminal(root, opts) {
       const px = (t) => xAxis.convertTimestampToPixel(Math.floor(t / size) * size);
 
       // stamps along the top, for what the dev's plan did
-      if (st.markers !== 'off') {
+      if (st.stamps) {
         const rows = [-Infinity, -Infinity]; // two rows of stamps; one that fits neither waits for a zoom in
         for (const mark of st.marks) {
           if (!inView(mark.t)) continue;
@@ -273,6 +274,15 @@ export function createTerminal(root, opts) {
       }
       // dev and you last, so nothing covers them
       picks.sort((a, b) => Number(isDev(a) || isMe(a)) - Number(isDev(b) || isMe(b)) || a.t - b.t);
+      // a candle with too many faces shows the biggest few and a count of the rest
+      const perBar = new Map();
+      for (const t of picks.slice().sort((a, b) => Number(isDev(b)) - Number(isDev(a)) || b.quote - a.quote)) {
+        const k = Math.floor(t.t / size);
+        const n = perBar.get(k) ?? { shown: new Set(), rest: 0, t: t.t, price: t.price };
+        if (n.shown.size < 3) n.shown.add(t); else n.rest++;
+        perBar.set(k, n);
+      }
+      picks = picks.filter((t) => perBar.get(Math.floor(t.t / size)).shown.has(t));
       const placed = [];
       for (const trade of picks) {
         const dev = isDev(trade);
@@ -288,15 +298,28 @@ export function createTerminal(root, opts) {
         drawBubble(ctx, b);
         st.hits.push({ x, y, r: r + 3, trade, isDev: dev, isMe: b.isMe });
       }
+      for (const n of perBar.values()) {
+        if (!n.rest) continue;
+        const x = px(n.t);
+        const ys = placed.filter((b) => b.x === x).map((b) => b.y);
+        const y = Math.max(12, Math.min(...ys) - 26);
+        ctx.save(); ctx.setLineDash([]);
+        ctx.font = '700 10px "JetBrains Mono", ui-monospace, monospace';
+        const label = `+${n.rest}`, w = ctx.measureText(label).width + 10;
+        ctx.fillStyle = RULE; ctx.beginPath(); ctx.roundRect(x - w / 2, y - 8, w, 16, 8); ctx.fill();
+        ctx.fillStyle = '#f8eedb'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, x, y + 0.5);
+        ctx.restore();
+      }
     },
   };
   chart.createIndicator({ name: 'CHOK_MARKERS', paneId: PANE, extendData: painter }, true);
 
   function legend(bar) {
-    const b = bar ?? st.bars[st.bars.length - 1];
+    // at rest, the last candle anything happened in, not an empty one at the edge
+    const b = bar ?? st.bars.slice().reverse().find((x) => x.volume > 0) ?? st.bars[st.bars.length - 1];
     if (!b) { $('.term-legend').innerHTML = ''; return; }
     const prec = chart.getSymbol()?.pricePrecision ?? 2;
-    const f = (v) => (st.show === 'mcap' ? fmtCompact(v) : foldZeros(v.toFixed(prec).replace(/0+$/, '')));
+    const f = (v) => (st.show === 'mcap' ? fmtCompact(v) : foldZeros(v.toFixed(prec).replace(/\.?0+$/, '')));
     const change = b.close - b.open, up = change >= 0, cls = up ? 'up' : 'down';
     $('.term-legend').innerHTML = `<div class="l1"><b>${esc(o.symbol)}/${esc(o.quote)}</b> ${esc(title())} · ${esc(st.period?.id ?? '')} · ${esc(o.venue)}
       <span class="ohlc ${cls}">O<em>${f(b.open)}</em> H<em>${f(b.high)}</em> L<em>${f(b.low)}</em> C<em>${f(b.close)}</em> <em>${f(change)} (${pct(b.open ? (change / b.open) * 100 : 0)})</em></span>${st.capped ? ' <span class="muted">showing the latest 4,000 candles</span>' : ''}</div>
@@ -326,6 +349,16 @@ export function createTerminal(root, opts) {
   // show about this many seconds, ending now
   function fit(seconds) {
     const w = plot.clientWidth - 90;
+    const size = st.period.secs * 1000;
+    const first = st.trades[0]?.t, last = st.trades[st.trades.length - 1]?.t;
+    if (!seconds && first != null) {
+      // the first view is where the trades are, not a long flat line up to now
+      const count = Math.ceil((last - first) / size) + 6;
+      chart.setBarSpace(Math.max(2, Math.min(24, w / Math.max(count, 12))));
+      chart.scrollToTimestamp(Math.floor(last / size) * size);
+      chart.scrollByDistance(-30);
+      return;
+    }
     const bars = st.bars.length || 1;
     const count = seconds ? Math.min(bars, seconds / st.period.secs) : bars;
     chart.setBarSpace(Math.max(2, Math.min(24, w / Math.max(count, 8))));
@@ -349,6 +382,7 @@ export function createTerminal(root, opts) {
     root.querySelectorAll('[data-g="show"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.show));
     root.querySelectorAll('[data-g="axis"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.axis));
     root.querySelectorAll('[data-markers]').forEach((b) => { b.checked = b.dataset.markers === st.markers; });
+    root.querySelectorAll('[data-stamps]').forEach((b) => { b.checked = st.stamps; });
     root.querySelectorAll('[data-study]').forEach((b) => { b.checked = st.studies.includes(b.dataset.study); });
     $('[data-menu="markers"] summary').textContent = `Markers: ${MARKERS.find(([v]) => v === st.markers)[1]}`;
   }
@@ -434,7 +468,7 @@ export function createTerminal(root, opts) {
     if (g === 'axis') setAxis(b.dataset.v);
     if (g === 'range') {
       const secs = RANGES.find(([l]) => l === b.dataset.v)[1];
-      st.period = pickPeriod(secs ?? Math.max(60, (Date.now() - st.start.t) / 1000));
+      st.period = pickPeriod(secs ?? Math.max(60, (Date.now() - st.start.t) / 1000), secs ? 150 : 200);
       reload(secs);
     }
     if (b.dataset.tool) tool(b.dataset.tool);
@@ -454,6 +488,7 @@ export function createTerminal(root, opts) {
       keep.set('studies', st.studies);
       setStudy(name, e.target.checked);
     }
+    if ('stamps' in e.target.dataset) { st.stamps = e.target.checked; keep.set('stamps', st.stamps); nudge(); }
     if (e.target.dataset.markers) { st.markers = e.target.dataset.markers; keep.set('markers', st.markers); chart.setStyles({}); paintBar(); nudge(); e.target.closest('details').open = false; }
   });
   // a click outside a menu closes it
@@ -482,7 +517,9 @@ export function createTerminal(root, opts) {
       const changed = sig(trades) !== sig(st.trades) || marks.length !== st.marks.length || me !== st.me;
       Object.assign(st, { trades: trades.slice().sort((a, b) => a.t - b.t), marks, devs, me, start });
       if (first) {
-        st.period = pickPeriod(Math.max(60, (Date.now() - start.t) / 1000));
+        // the timeframe that suits the trades themselves
+        const span = st.trades.length ? (st.trades[st.trades.length - 1].t - st.trades[0].t) / 1000 : 900;
+        st.period = pickPeriod(Math.max(300, span), 40);
         reload();
         return;
       }

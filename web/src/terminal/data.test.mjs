@@ -52,7 +52,7 @@ test('stats change compares with the last price before the window', () => {
   assert.equal(s.change, 200);
 });
 
-test('positions work out profit from what was spent, got and still held', () => {
+test('positions work out gain or loss from what was spent, got and still held', () => {
   const [a] = positions([tr(0, 1, true, 'a', 10, 100), tr(1, 1, false, 'a', 6, 40)], 0.2, 1000);
   assert.equal(a.tokens, 60);
   assert.equal(a.share, 6);

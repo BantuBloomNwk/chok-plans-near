@@ -38,14 +38,28 @@ function price(y) {
 }
 const toks = (raw) => { const n = Number(BigInt(raw) / 1_000_000n); return n >= 1e9 ? `${+(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${+(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${+(n / 1e3).toFixed(1)}K` : n.toLocaleString(); };
 const ago = (ms) => { const s = Math.max(1, Math.round((Date.now() - ms) / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`; };
+const fmtSecs = (s) => (s >= 86400 ? `${+(s / 86400).toFixed(1)} days` : s >= 3600 ? `${+(s / 3600).toFixed(1)} hours` : s >= 60 ? `${+(s / 60).toFixed(1)} min` : `${Math.round(s)}s`);
+const untilText = (ns) => { const s = (Number(ns) - Date.now() * 1e6) / 1e9; return s > 0 ? fmtSecs(s) : 'moments, once anyone applies it'; };
 const short = (a) => (a.length > 22 ? `${a.slice(0, 10)}…${a.slice(-9)}` : a);
 
-let MARKET = null, PLANS = null, coins = [], picked = null, side = 'buy', meta = {};
+let MARKET = null, PLANS = null, coins = [], picked = null, side = 'buy', meta = {}, showAll = false;
+
+// every pool, however many there are
+async function allPools() {
+  const all = [];
+  for (let from = 0; ; from += 100) {
+    const page = await view(MARKET, 'list_pools', { from, limit: 100 });
+    all.push(...page);
+    if (page.length < 100) return all;
+  }
+}
+// the newest `limit` things a contract keeps a count of
+const fromEnd = (count, limit) => ({ from: Math.max(0, Number(count) - limit), limit });
 
 async function load() {
   const info = await (await fetch(`${API}/near/info`)).json();
   MARKET = info.market; PLANS = info.plan;
-  const pools = await view(MARKET, 'list_pools', { from: 0, limit: 100 });
+  const pools = await allPools();
   await Promise.all(pools.map(async (p) => { meta[p.token] ??= await view(p.token, 'ft_metadata', {}).catch(() => ({ name: p.token, symbol: '?' })); }));
   coins = pools.sort((a, b) => b.listed_at - a.listed_at);
   list();
@@ -55,9 +69,14 @@ async function load() {
 }
 
 function list() {
+  // a coin with barely any trades waits behind the toggle, so the list opens on coins worth looking at
+  const live = (p) => p.trades >= 3 && !/^test-/.test(p.token);
+  const shown = showAll ? coins : coins.filter((p) => live(p) || p.token === picked);
+  const hidden = coins.length - shown.length;
   const demo = SAMPLE ? `<button class="mk-coin${picked === 'sample' ? ' on' : ''}" data-coin="sample"><span class="mk-sym">$DANDOG</span><span class="mk-name">Sample data</span></button>` : '';
   if (!coins.length && !SAMPLE) { $('mk-list').innerHTML = '<p class="muted">No coins listed yet. Launch one below and it shows up here.</p>'; return; }
-  $('mk-list').innerHTML = demo + coins.map((p) => {
+  const more = hidden ? `<button class="mk-coin mk-more" data-all="1"><span class="mk-sym">+${hidden}</span><span class="mk-name">Show quiet and test coins</span></button>` : '';
+  $('mk-list').innerHTML = demo + shown.map((p) => {
     const m = meta[p.token];
     const mcap = BigInt(p.price) * 1_000_000_000n;
     return `<button class="mk-coin${picked === p.token ? ' on' : ''}" data-coin="${esc(p.token)}">
@@ -66,7 +85,7 @@ function list() {
       <span class="mk-sub">cap ${near(mcap, 1)} NEAR · ${p.trades} trades</span>
       <span class="mk-bar"><i style="width:${p.sold_bps / 100}%"></i></span><span class="mk-sub">${(p.sold_bps / 100).toFixed(1)}% of the curve sold</span>
     </button>`;
-  }).join('');
+  }).join('') + more;
 }
 
 async function open(token) {
@@ -80,9 +99,9 @@ async function open(token) {
 async function detail() {
   if (!picked) return;
   if (picked === 'sample') { showSample(); return; }
-  const [p, trades, keys] = await Promise.all([
-    view(MARKET, 'get_pool', { token: picked }),
-    view(MARKET, 'get_trades', { token: picked, from: 0, limit: 500 }),
+  const p = await view(MARKET, 'get_pool', { token: picked });
+  const [trades, keys] = await Promise.all([
+    view(MARKET, 'get_trades', { token: picked, ...fromEnd(p.trades, 2000) }),
     fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'view_access_key_list', finality: 'optimistic', account_id: picked } }) }).then((r) => r.json()).then((j) => j.result?.keys?.length ?? null),
   ]);
   const m = meta[picked];
@@ -90,20 +109,28 @@ async function detail() {
   const plan = await view(PLANS, 'get_plan', { plan_id: planId }).catch(() => null);
   const devs = new Set([p.creator, plan?.beneficiary].filter(Boolean));
   // what the plan did, from its own log on chain, as stamps on the chart
-  const log = await view(PLANS, 'get_log', { plan_id: planId, from: 0, limit: 200 }).catch(() => []);
+  const log = plan ? await view(PLANS, 'get_log', { plan_id: planId, ...fromEnd(plan.log_len, 300) }).catch(() => []) : [];
   const marks = log.filter((e) => e.kind === 'busted' || e.kind === 'released').map((e) => e.kind === 'busted'
     ? { t: Number(e.at_ms), kind: 'busted', label: 'BUSTED', note: `The plan refused ${toks(e.amount)}${e.reason ? ` (${e.reason})` : ''}, and the cap is now ${toks(e.cap)}.` }
     : { t: Number(e.at_ms), kind: 'released', label: `PLAN +${toks(e.amount)}`, note: 'The plan let this out, inside its rules.' });
-  showTerminal({ token: picked, symbol: m.symbol, name: m.name, trades: toTrades(trades), marks, devs, me: window.cpn?.me ?? null, start: { t: Number(p.listed_at), price: startPrice(p) } });
+  const secs = (ns) => Number(ns) / 1e9;
+  const every = plan ? `${toks(plan.cap)} every ${fmtSecs(secs(plan.period_ns))}` : '';
+  const pending = plan?.pending ? `<span class="pending">Cap rising to ${toks(plan.pending.cap)} in ${untilText(plan.pending.effective_at)}</span>` : '';
+  const pendingHolder = plan?.pending_holder ? `<span class="pending">New holder in ${untilText(plan.pending_holder.effective_at)}</span>` : '';
+  const planLine = plan ? `<div class="tp-plan"><span>Dev's bag <b>${toks(plan.balance)}</b> locked</span><span><b>${every}</b></span><span class="busted"><b>${plan.busted}</b> Busted</span>${pending}${pendingHolder}<span class="tp-curve"><span>${(p.sold_bps / 100).toFixed(1)}% sold</span><i><u style="width:${p.sold_bps / 100}%"></u></i></span></div>` : '';
+  showTerminal({ planLine, token: picked, symbol: m.symbol, name: m.name, trades: toTrades(trades), marks, devs, me: window.cpn?.me ?? null, start: { t: Number(p.listed_at), price: startPrice(p) } });
   $('mk-chain').innerHTML = `<a href="${acctLink(picked)}" target="_blank" rel="noreferrer" class="mono">${esc(short(picked))}</a>
     <span>${keys === 0 ? '✓ the coin has no keys, so nobody can change it' : keys == null ? '' : `⚠ the coin still has ${keys} key(s)`}</span>
     <span><b>${near(p.real_near)}</b> NEAR in the pool</span>
     <span><b>${(p.sold_bps / 100).toFixed(1)}%</b> of the curve sold</span>
     <span>creator <span class="mono">${esc(short(p.creator))}</span> earns the 1% fee</span>`;
-  const fmtPeriod = (ns) => { const secs = Number(ns) / 1e9; return secs >= 3600 ? `${+(secs / 3600).toFixed(1)}h` : secs >= 60 ? `${+(secs / 60).toFixed(1)} min` : `${secs}s`; };
+  // how quickly the whole bag could leave at this cap: terms decide what a plan is worth
+  const drain = plan ? Number(BigInt(plan.balance) / (BigInt(plan.cap) || 1n)) * secs(plan.period_ns) : 0;
   $('mk-bag').innerHTML = plan ? `<b>The dev's bag is in plan #${planId}</b>
-      <div class="mk-facts"><span><b>${toks(plan.balance)}</b> still locked</span><span><b>${toks(plan.released_total)}</b> let out so far</span><span><b>${plan.busted}</b> Busted</span><span>cap <b>${toks(plan.cap)}</b> every ${fmtPeriod(plan.period_ns)}</span><span>never below <b>${toks(plan.min_cap)}</b></span></div>
-      <p class="muted">${plan.loosen_allowed ? 'The cap can be loosened after a public notice.' : 'Launched to never loosen.'} This coin was minted straight into the market and this plan in one transaction, so the dev never held their share loose. They can only sell what the plan lets out, and sells from the dev's own account are marked.</p>` : '';
+      <div class="mk-facts"><span><b>${toks(plan.balance)}</b> still locked</span><span><b>${toks(plan.released_total)}</b> let out so far</span><span><b>${plan.busted}</b> Busted</span><span>cap <b>${every}</b></span><span>never below <b>${toks(plan.min_cap)}</b></span><span>notice <b>${fmtSecs(secs(plan.notice_ns))}</b></span><span>holder <span class="mono">${esc(short(plan.holder))}</span></span></div>
+      ${plan.pending ? `<p><b>Pending:</b> the cap goes to ${toks(plan.pending.cap)} in ${untilText(plan.pending.effective_at)}, unless the dev cancels.</p>` : ''}
+      ${plan.pending_holder ? `<p><b>Pending:</b> <span class="mono">${esc(short(plan.pending_holder.holder))}</span> becomes the holder in ${untilText(plan.pending_holder.effective_at)}, unless the dev cancels.</p>` : ''}
+      <p class="muted">At this cap the whole bag could be out in about ${fmtSecs(drain)}. ${plan.loosen_allowed ? 'The cap can be loosened after the public notice.' : 'Launched to never loosen.'} This coin was minted straight into the market and this plan in one transaction, so the dev never held their share loose. Asking for more than the cap is refused, and sells from the dev's own account are marked. A wallet they buy with separately isn't in any plan, on this or any launchpad.</p>` : '';
   if (p.creator === window.cpn?.me && BigInt(p.fees_owed) > 0n) $('mk-bag').innerHTML += `<button class="btn ghost" id="mk-claim">Claim ${near(p.fees_owed)} NEAR in fees</button>`;
   await panel(p);
 }
@@ -183,7 +210,7 @@ async function trade() {
   // 2% slippage: if the price moves more than that before your trade lands, nothing happens
   const min = (out * 98n / 100n).toString();
   const sym = meta[picked].symbol;
-  if (side === 'buy') await w.send([{ receiverId: MARKET, actions: [w.fc('buy', { token: picked, min_out: min }, 200, amt)] }], `Buying $${sym}`, say);
+  if (side === 'buy') await w.send([{ receiverId: MARKET, actions: [w.fc('buy', { token: picked, min_out: min }, 250, amt)] }], `Buying $${sym}`, say);
   else await w.send([{ receiverId: picked, actions: [w.fc('ft_transfer_call', { receiver_id: MARKET, amount: amt.toString(), msg: JSON.stringify({ sell: { min_out: min } }) }, 150, 1n)] }], `Selling $${sym}`, say);
   $('mk-amt').value = '';
   await refresh();
@@ -191,12 +218,15 @@ async function trade() {
 
 async function refresh() {
   if (!MARKET) return;
-  const pools = await view(MARKET, 'list_pools', { from: 0, limit: 100 }).catch(() => null);
+  const pools = await allPools().catch(() => null);
   if (pools) { for (const p of pools) if (!meta[p.token]) meta[p.token] = await view(p.token, 'ft_metadata', {}).catch(() => ({ name: p.token, symbol: '?' })); coins = pools.sort((a, b) => b.listed_at - a.listed_at); list(); }
   await detail().catch(() => {});
 }
 
-$('mk-list').onclick = (e) => { const b = e.target.closest('.mk-coin'); if (b) open(b.dataset.coin); };
+$('mk-list').onclick = (e) => {
+  const b = e.target.closest('.mk-coin');
+  if (b?.dataset.all) { showAll = true; list(); } else if (b) open(b.dataset.coin);
+};
 $('mk-side-buy').onclick = () => { side = 'buy'; $('mk-amt').value = ''; detail(); };
 $('mk-side-sell').onclick = () => { side = 'sell'; $('mk-amt').value = ''; detail(); };
 $('mk-amt').oninput = quote;
@@ -216,4 +246,6 @@ window.addEventListener('cpn-wallet', () => detail().catch(() => {}));
 window.cpnMarketRefresh = refresh;
 window.cpnMarketOpen = (coin) => open(coin).catch(() => {});
 load().catch((e) => { $('mk-list').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-setInterval(() => refresh().catch(() => {}), 10_000);
+// close to live while someone is watching, and nothing while the tab is hidden
+setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 2_500);
+$('mk-jump')?.addEventListener('click', () => document.querySelector('.mk-trade')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));

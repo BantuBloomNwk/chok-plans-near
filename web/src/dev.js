@@ -13,13 +13,11 @@ import { setupHereWallet } from '@near-wallet-selector/here-wallet';
 import { setupIntearWallet } from '@near-wallet-selector/intear-wallet';
 import { actionCreators } from '@near-js/transactions';
 import { PublicKey } from '@near-js/crypto';
+import S from '../../deployment.json';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
 const RPC = 'https://test.rpc.fastnear.com';
-const PLAN = 'book.chokplans-mvxhykzp.testnet';
-const BUSDOG = 'busdog.chokplans-mvxhykzp.testnet';
-const MARKET = 'bourse.chokplans-mvxhykzp.testnet';
-const LAUNCHER = 'launchpad.chokplans-mvxhykzp.testnet';
+const { plan: PLAN, coin: BUSDOG, launcher: LAUNCHER } = S;
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;
 const tokens = (n) => (BigInt(Math.round(n)) * 1_000_000n).toString();
@@ -138,12 +136,32 @@ async function hireIfAsked() {
     actionCreators.addKey(PublicKey.fromString(a.publicKey), actionCreators.functionCallAccessKey(a.contract, [a.method], NEAR(0.45))),
   ] }] };
 }
-const termsFromForm = () => ({ cap: Number($('dev-cap').value || 20), penalty: Number($('dev-penalty').value || 20), notice: Number($('dev-notice').value || 120), loosen: $('dev-loosen').checked });
+// the launcher's limits, said here first so a launch isn't refused after a wallet prompt
+const termsFromForm = () => {
+  const f = { cap: Number($('dev-cap').value || 20), penalty: Number($('dev-penalty').value || 20), notice: Number($('dev-notice').value || 120), loosen: $('dev-loosen').checked };
+  if (!(f.cap > 0 && f.cap <= 20)) throw new Error('The cap can be at most 20 million a minute: a tenth of your 200M share.');
+  if (!(f.penalty >= 1 && f.penalty <= 50)) throw new Error('Each Busted has to cut the cap by 1% to 50%.');
+  if (!(f.notice >= 60)) throw new Error('The public notice has to be at least 60 seconds.');
+  return f;
+};
+
+// NEP-413: the wallet signs without a transaction, which is how we know the launch we pay for is yours
+async function signLaunch(symbol) {
+  const message = `Launch ${symbol.toUpperCase()} as ${me} | ${Date.now()}`;
+  const nonce = crypto.getRandomValues(new Uint8Array(32));
+  const wallet = await selector.wallet();
+  let signed;
+  try { signed = await wallet.signMessage({ message, recipient: LAUNCHER, nonce: Buffer.from(nonce) }); }
+  catch (e) { throw new Error(`Your wallet wouldn't sign the message (${e.message || e}). You can claim testnet NEAR at https://near-faucet.io/ and launch from your own wallet.`); }
+  if (!signed?.signature) throw new Error('Your wallet did not return a signature. You can claim testnet NEAR at https://near-faucet.io/ and launch from your own wallet.');
+  return { publicKey: signed.publicKey, signature: signed.signature, message, nonce: Buffer.from(nonce).toString('base64'), recipient: LAUNCHER };
+}
 
 // one call: the coin, 80% on sale, 20% in your plan. Your wallet signs and pays if it can.
 async function launch() {
   const name = $('dev-cname').value.trim(), symbol = $('dev-csym').value.trim();
   if (!name || !/^[a-z0-9]{2,8}$/i.test(symbol)) return status('Give it a name and a ticker of 2 to 8 letters or numbers.', true);
+  if (new TextEncoder().encode(name).length > 32) return status('That name is too long: 32 bytes at most, and some letters take two or three.', true);
   const f = termsFromForm();
   const { holder, txs } = await hireIfAsked();
   const cost = BigInt(await view(LAUNCHER, 'launch_cost', {}));
@@ -154,8 +172,10 @@ async function launch() {
     await send([...txs, { receiverId: LAUNCHER, actions: [fc('launch', { name, symbol, terms }, 280, cost)] }], `Launching $${symbol.toUpperCase()}`);
   } else {
     if (txs.length) await send(txs, 'Hiring your agent');
-    status(`Your wallet is short of the ${(Number(cost / 10n ** 21n) / 1000).toFixed(2)} NEAR a launch costs, so we're paying for this one. About half a minute…`);
-    await post('/near/my-coin', { owner: me, name, symbol, terms: { capMillions: f.cap, penaltyBps: Math.round(f.penalty * 100), noticeSecs: f.notice, loosen: f.loosen, holder } });
+    status(`Your wallet is short of the ${(Number(cost / 10n ** 21n) / 1000).toFixed(2)} NEAR a launch costs. We'll pay if your wallet signs a message saying this launch is yours: it costs nothing.`);
+    const proof = await signLaunch(symbol);
+    status('Signed. Launching, about half a minute…');
+    await post('/near/my-coin', { owner: me, name, symbol, proof, terms: { capMillions: f.cap, penaltyBps: Math.round(f.penalty * 100), noticeSecs: f.notice, loosen: f.loosen, holder } });
     status(`$${symbol.toUpperCase()} is live. 80% is on sale and your 20% is in its plan.`);
   }
   await new Promise((r) => setTimeout(r, 2500));
@@ -205,9 +225,9 @@ async function main() {
   selector.store.observable.subscribe(sync);
   sync();
   $('dev-connect').onclick = async () => { if (me) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
-  $('dev-faucet').onclick = async () => { status('Sending you 50M BUSDOG…'); try { await post('/near/faucet', { account: me }); status('50M BUSDOG sent.'); render(); } catch (e) { status(e.message, true); } };
+  $('dev-faucet').onclick = async () => { status('Sending you 25M BUSDOG…'); try { await post('/near/faucet', { account: me }); status('25M BUSDOG sent.'); render(); } catch (e) { status(e.message, true); } };
   $('dev-mycoin').onclick = () => launch().catch((e) => status(e.message, true));
-  $('dev-make').onclick = () => makePlan().catch(() => {});
+  $('dev-make').onclick = () => makePlan().catch((e) => status(e.message, true));
   $('dev-balances').onclick = (e) => { const b = e.target.closest('.d-open'); if (b) window.cpnMarketOpen?.(b.dataset.coin); };
   $('dev-plans').onclick = (e) => onPlanClick(e).catch(() => {});
   setInterval(() => me && render(), 8000);

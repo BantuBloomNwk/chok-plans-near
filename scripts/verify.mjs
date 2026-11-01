@@ -48,6 +48,7 @@ for (const [what, id, wasmName] of [['plan contract', S.plan, 'plan'], ['market'
   if (w) check(acc.code_hash === hashOf(w), `the ${what}'s code is this repo's build`, `on chain ${acc.code_hash}, local ${hashOf(w)}`);
   else skip(`the ${what}'s code is this repo's build`, `run npm run build first (on chain: ${acc.code_hash})`);
 }
+check((await callOn(S.launcher, 'outlayer', {})) === S.outlayer, `launches can only name ${S.outlayer} as a judge's host`);
 const embedded = await callOn(S.launcher, 'token_hash', {});
 const tokenWasm = local('target/wasm32-unknown-unknown/release/token.wasm');
 if (tokenWasm) check(embedded === sha(tokenWasm).toString('hex'), 'the token the launcher deploys is this repo\'s token build', embedded);
@@ -137,9 +138,12 @@ if (logFile) {
   for (const step of run.log.filter((l) => l.tx)) {
     const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
     if (!tx) { wrong.push(`${step.n}: not found`); continue; }
-    const failed = [tx.transaction_outcome, ...tx.receipts_outcome].some((o) => o.outcome.status?.Failure);
+    const failures = [tx.transaction_outcome, ...tx.receipts_outcome].filter((o) => o.outcome.status?.Failure).map((o) => JSON.stringify(o.outcome.status.Failure));
+    const failed = failures.length > 0;
+    // a refusal has to be the refusal the log says, not just any failure
+    const said = step.got.match(/^refused: (.+)$/)?.[1];
     const events = tx.receipts_outcome.flatMap((o) => o.outcome.logs).filter((l) => l.startsWith('EVENT_JSON:')).map((l) => JSON.parse(l.slice(11)).event);
-    const expect = /refused by the contract|^refused:/.test(step.got) ? failed
+    const expect = said ? failures.some((f) => f.includes(said.trim())) : /^refused/.test(step.got) ? failed
       : /^busted/.test(step.got) ? events.includes('busted')
       : /^released/.test(step.got) ? events.includes('released')
       : /returned false/.test(step.got) ? events.includes('reveal_checked')
