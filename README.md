@@ -33,7 +33,7 @@ No wallet needed for steps 1 to 5.
 
 `npm run verify` checks every claim in that table against the chain, and that the code on each is this repo's build. It also checks that the judge every plan pins is the judge it gets, that every revealed plan matches its commitment, that every coin came from the launcher and is bound to its plan, that the market can pay what it owes, and that the model passes a fresh attestation.
 
-With no NEAR AI key and after `npm run build`, expect 20 passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), 27 passed. Without `npm run build` the code checks skip, and nothing should fail.
+With no NEAR AI key and after `npm run build`, expect 21 passed and 0 failed, with 1 skipped for the model. With a key (`NEAR_AI_KEY=...`), the model's checks run too: 28 passed. Without `npm run build` the code checks skip, and nothing should fail.
 
 ## How it works
 

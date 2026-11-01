@@ -33,7 +33,7 @@ for (const label of ['ada', 'bola', 'chidi', 'funke', 'musa']) {
   const id = `${label}${Date.now().toString(36)}.${S.dev}`;
   const kp = KeyPair.fromRandom('ed25519');
   await mem.setKey('testnet', id, kp);
-  await dev.signAndSendTransaction({ receiverId: id, actions: [transactions.createAccount(), transactions.transfer(N(0.7)), transactions.addKey(kp.getPublicKey(), transactions.fullAccessKey())] });
+  await dev.signAndSendTransaction({ receiverId: id, actions: [transactions.createAccount(), transactions.transfer(N(0.55)), transactions.addKey(kp.getPublicKey(), transactions.fullAccessKey())] });
   traders.push(await nearMem.account(id));
 }
 const buy = (a, amount) => call(a, S.market, 'buy', { token: coin, min_out: '0' }, N(amount));
