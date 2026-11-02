@@ -22,7 +22,8 @@ import bs58 from 'bs58';
 import { providers } from 'near-api-js';
 
 const S = JSON.parse(fs.readFileSync(new URL('../deployment.json', import.meta.url)));
-const rpc = new providers.JsonRpcProvider({ url: 'https://test.rpc.fastnear.com' });
+// the same public RPCs the page uses, so a rate limit on one isn't reported as a broken claim
+const rpc = new providers.FailoverRpcProvider(['https://test.rpc.fastnear.com', 'https://rpc.testnet.fastnear.com', 'https://near-testnet.drpc.org'].map((url) => new providers.JsonRpcProvider({ url }, { retries: 4, backoff: 2, wait: 800 })));
 const sha = (b) => crypto.createHash('sha256').update(b).digest();
 const local = (p) => { try { return fs.readFileSync(new URL(`../${p}`, import.meta.url)); } catch { return null; } };
 let pass = 0, fail = 0, skipped = 0;
@@ -130,14 +131,15 @@ if (logFile) {
   console.log(`\nattack log: plan #${run.plan} on ${run.contract}, ${run.at}`);
   if (run.contract !== S.plan) check(false, 'the attack log is for the live plan contract', run.contract);
   let ok = 0;
-  const wrong = [];
+  const wrong = [], unread = [];
   for (const step of run.log.flatMap((l) => (l.txs || []).map((tx) => ({ ...l, tx, viaAgent: true })))) {
     const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
-    tx && !tx.receipts_outcome.some((o) => o.outcome.status?.Failure) ? ok++ : wrong.push(`${step.n}`);
+    if (!tx) { unread.push(`${step.n}`); continue; }
+    !tx.receipts_outcome.some((o) => o.outcome.status?.Failure) ? ok++ : wrong.push(`${step.n}`);
   }
   for (const step of run.log.filter((l) => l.tx)) {
     const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
-    if (!tx) { wrong.push(`${step.n}: not found`); continue; }
+    if (!tx) { unread.push(`${step.n}`); continue; }
     const failures = [tx.transaction_outcome, ...tx.receipts_outcome].filter((o) => o.outcome.status?.Failure).map((o) => JSON.stringify(o.outcome.status.Failure));
     const failed = failures.length > 0;
     // a refusal has to be the refusal the log says, not just any failure
@@ -151,6 +153,7 @@ if (logFile) {
     expect ? ok++ : wrong.push(`${step.n}`);
   }
   check(wrong.length === 0, `every transaction in the attack log ended the way the log says (${ok} checked)`, wrong.length ? `steps that don't match: ${wrong.join(', ')}` : '');
+  if (unread.length) skip(`attack log steps ${unread.join(', ')}`, 'the RPCs are busy and would not answer, so these were not checked. Run it again in a minute.');
 } else skip('the attack log', 'run node scripts/attack.mjs first');
 
 // 7: the model

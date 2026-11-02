@@ -255,7 +255,8 @@ export function createTerminal(root, opts) {
           const row = rows.findIndex((end) => x - end >= 74);
           if (row < 0) continue;
           rows[row] = x;
-          const s = { x, y: row ? 34 : 14, bottom: bounding.height, mark };
+          // a stamp at the very first candle still has to be readable
+          const s = { x: Math.max(40, x), y: row ? 34 : 14, bottom: bounding.height, mark };
           drawStamp(ctx, s);
           st.hits.push({ x, y: s.y, r: 16, mark });
         }

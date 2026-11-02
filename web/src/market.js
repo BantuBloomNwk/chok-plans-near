@@ -4,7 +4,7 @@
 // own wallet.
 
 import { createTerminal } from './terminal/terminal.js';
-import { renderHead, renderStats, renderTabs } from './terminal/panels.js';
+import { renderHead, renderStats, renderTabs, tickAges } from './terminal/panels.js';
 import { sampleMarket } from './terminal/sample.js';
 
 const API = 'https://near-play.161-97-74-212.sslip.io';
@@ -62,7 +62,11 @@ async function load() {
   list();
   const want = new URLSearchParams(location.hash.slice(1)).get('coin');
   if (!picked && SAMPLE) open('sample');
-  else if (!picked && coins.length) open(coins.find((c) => c.token === want)?.token ?? coins[0].token);
+  // the busiest coin, not the newest: anyone can launch, so the newest could be anything, or empty
+  else if (!picked && coins.length) {
+    const best = coins.filter((c) => !/^test-/.test(c.token)).sort((a, b) => b.trades - a.trades)[0] ?? coins[0];
+    open(coins.find((c) => c.token === want)?.token ?? best.token);
+  }
 }
 
 function list() {
@@ -93,15 +97,15 @@ async function open(token) {
   await detail();
 }
 
-let busy = false, shownSig = null, chainKeys = {}, cached = null;
+let busy = false, again = false, shownSig = null, chainKeys = {}, cached = null;
 // One tick reads the pool and its plan, and goes on only if something changed: the tape keeps its
 // scroll, and a text selection survives. `force` is for the reader changing something themselves.
 async function detail(force = false) {
   if (!picked) return;
   if (picked === 'sample') { showSample(); return; }
-  if (busy) return;
+  if (busy) { again ||= force; return; }
   busy = true;
-  try { await detailOf(picked, force); } finally { busy = false; }
+  try { await detailOf(picked, force); } finally { busy = false; if (again) { again = false; detail(true); } }
 }
 async function detailOf(token, force) {
   const p = await view(MARKET, 'get_pool', { token });
@@ -135,7 +139,7 @@ async function detailOf(token, force) {
   const pendingHolder = plan?.pending_holder ? `<span class="pending">New holder in ${untilText(plan.pending_holder.effective_at)}</span>` : '';
   const planLine = plan ? `<div class="tp-plan"><span>Dev's bag <b>${toks(plan.balance)}</b> locked</span><span><b>${every}</b></span><span class="busted"><b>${plan.busted}</b> Busted</span>${loosenTag}${pending}${pendingHolder}<span class="tp-curve"><span>${(p.sold_bps / 100).toFixed(1)}% sold</span><i><u style="width:${p.sold_bps / 100}%"></u></i></span></div>` : '';
   cached = null;
-  showTerminal({ planLine, token: picked, symbol: m.symbol, name: m.name, trades: toTrades(trades), marks, devs, me: window.cpn?.me ?? null, start: { t: Number(p.listed_at), price: startPrice(p) } });
+  showTerminal({ planLine, planLog: log, token: picked, symbol: m.symbol, name: m.name, trades: toTrades(trades), marks, devs, me: window.cpn?.me ?? null, start: { t: Number(p.listed_at), price: startPrice(p) } });
   $('mk-chain').innerHTML = `<a href="${acctLink(picked)}" target="_blank" rel="noreferrer" class="mono">${esc(short(picked))}</a>
     <span>${keys === 0 ? '✓ the coin has no keys, so nobody can change it' : keys == null ? '' : `⚠ the coin still has ${keys} key(s)`}</span>
     <span><b>${near(p.real_near)}</b> NEAR in the pool</span>
@@ -182,6 +186,8 @@ function showTerminal(m) {
   renderTabs($('mk-tabs'), { ...m, quote: 'NEAR', supply: SUPPLY, link: (a) => (m.sample ? null : acctLink(a)) }, panels);
   renderStats($('mk-stats'), m.trades, 'NEAR', panels);
 }
+// live ages and windows keep moving between trades, without touching the rest of the tape
+setInterval(() => { if (!document.hidden) tickAges($('mk-tabs')); }, 5000);
 
 let quoteTimer = null;
 async function panel(p) {
@@ -260,8 +266,10 @@ $('mk-list').onclick = (e) => {
   const b = e.target.closest('.mk-coin');
   if (b?.dataset.all) { showAll = true; list(); } else if (b) open(b.dataset.coin);
 };
-$('mk-side-buy').onclick = () => { side = 'buy'; $('mk-amt').value = ''; detail(true); };
-$('mk-side-sell').onclick = () => { side = 'sell'; $('mk-amt').value = ''; detail(true); };
+// the buttons answer at once; what depends on the chain follows
+const lightSides = () => { $('mk-side-buy').classList.toggle('on', side === 'buy'); $('mk-side-sell').classList.toggle('on', side === 'sell'); };
+$('mk-side-buy').onclick = () => { side = 'buy'; lightSides(); $('mk-amt').value = ''; $('mk-quote').textContent = ''; detail(true); };
+$('mk-side-sell').onclick = () => { side = 'sell'; lightSides(); $('mk-amt').value = ''; $('mk-quote').textContent = ''; detail(true); };
 $('mk-amt').oninput = quote;
 $('mk-presets').onclick = (e) => {
   const v = e.target.closest('.chip')?.dataset.v;
@@ -269,7 +277,13 @@ $('mk-presets').onclick = (e) => {
   $('mk-amt').value = v.endsWith('%') ? Math.floor(Number(BigInt($('mk-bal').dataset.tokens || '0') / 1_000_000n) * parseInt(v) / 100) : v;
   quote();
 };
-$('mk-go').onclick = () => trade().catch((e) => { if (e.network) say(e.message, true); });
+let trading = false;
+$('mk-go').onclick = () => {
+  if (trading) return;
+  trading = true;
+  $('mk-go').disabled = true;
+  trade().catch((e) => { if (e.network) say(e.message, true); }).finally(() => { trading = false; $('mk-go').disabled = false; });
+};
 $('mk-bag').onclick = async (e) => {
   if (e.target.id === 'mk-topup') {
     if (!window.cpn?.me) { window.cpn?.connect(); return; }

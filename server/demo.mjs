@@ -293,9 +293,10 @@ async function launchCoin(name, symbol) {
 // a visitor without enough testnet NEAR: we pay, and the coin is still all theirs
 async function sponsorLaunch(owner, name, symbol, t) {
   const cost = await launchCost();
-  const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? Math.floor(n) : d; };
-  const capM = num(t.capMillions, 1, 20, 20), bps = num(t.penaltyBps, 1, 5000, 2000);
-  const terms = { holder: acctId(t.holder || owner), cap: tokens(capM * 1e6), min_cap: tokens(Math.max(1, capM / 10) * 1e6), period_secs: '60', start_in_secs: '0', notice_secs: String(num(t.noticeSecs, 60, 86400, 120)), penalty_bps: bps, sealed: null, loosen_allowed: !!t.loosen };
+  // exactly what was signed: anything out of range is refused, never quietly changed
+  const capRaw = BigInt(Math.round(Number(t.capMillions) * 1e6)) * 1_000_000n, notice = Number(t.noticeSecs), bps = Number(t.penaltyBps);
+  if (!(capRaw > 0n && capRaw <= BigInt(tokens(20_000_000))) || !Number.isInteger(notice) || notice < 60 || notice > 315_360_000 || !Number.isInteger(bps) || bps < 1 || bps > 5000) throw Object.assign(new Error('Those terms are out of range: a cap up to 20M a minute, at least 60 seconds of notice, a penalty of 1% to 50%.'), { status: 400 });
+  const terms = { holder: acctId(t.holder || owner), cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(notice), penalty_bps: bps, sealed: null, loosen_allowed: !!t.loosen };
   const out = await call(dev, S.launcher, 'launch', { name: name.slice(0, 32), symbol, terms, dev: owner }, cost.toString());
   return { coin: coinIdOf(out), name, symbol: symbol.toUpperCase(), owner };
 }
@@ -328,7 +329,14 @@ const acctId = (v) => { const a = String(v || '').trim().toLowerCase(); if (!/^[
 
 // visitors share these limits: plans and coins cost testnet NEAR
 let healthAt = 0, healthOk = true;
-const COINS_A_DAY = Number(process.env.COINS_A_DAY || 15);
+// the plan's own limit first, so an order refused for that doesn't spend the shared one
+const orderLimit = (ip, planId) => {
+  if (!allow(`ask:plan:${planId}`, 20, 86_400_000)) return 'That plan has had enough orders for today. Get a new one.';
+  if (!allow(`ask:${ip}`, 30, 600_000) || !allow(`ask:day:${ip}`, 80, 86_400_000)) return 'Slow down a little.';
+  if (!allow('ask:all', 300, 86_400_000)) return 'The playground has taken all the orders it can today. Try again tomorrow.';
+  return null;
+};
+const COINS_A_DAY = Number(process.env.COINS_A_DAY || 8);
 const seen = new Map();
 const allow = (key, n, ms) => { const now = Date.now(), list = (seen.get(key) || []).filter((t) => now - t < ms); if (list.length >= n) return false; list.push(now); seen.set(key, list); return true; };
 
@@ -386,13 +394,12 @@ http.createServer((req, res) => {
         const owner = acct(body.owner), name = String(body.name || '').trim(), symbol = String(body.symbol || '').trim();
         if (!name || Buffer.byteLength(name) > 32 || !/^[a-z0-9]{2,8}$/i.test(symbol)) return json(res, 400, { error: 'Give it a name and a ticker of 2 to 8 letters or numbers.' });
         if (!await provesOwner(owner, `Launch ${symbol.toUpperCase()} ${launchDigest(name, symbol, body.terms || {})}`, body.proof)) return json(res, 403, { error: 'We pay for a launch only if your wallet signs for it.' });
-        if (!allow(`coin:${ip}`, 3, 3_600_000) || !allow('sponsored:all', 10, 86_400_000)) return json(res, 429, { error: 'We have paid for enough launches today. A wallet with 2.4 NEAR can still launch: https://near-faucet.io/' });
+        if (!allow(`coin:${ip}`, 3, 3_600_000) || !allow('sponsored:all', 5, 86_400_000)) return json(res, 429, { error: 'We have paid for enough launches today. A wallet with 2.4 NEAR can still launch: https://near-faucet.io/' });
         return json(res, 200, await sponsorLaunch(owner, name, symbol, body.terms || {}));
       }
       const planId = Number(body.plan);
       if (url.pathname === '/near/ask' && body.agent) {
         // a visitor's own agent on a visitor's own plan
-        if (!allow(`ask:${ip}`, 30, 600_000) || !allow('ask:all', 300, 86_400_000) || !allow(`ask:plan:${planId}`, 20, 86_400_000)) return json(res, 429, { error: 'That plan has had enough orders for today. Get a new one.' });
         // agent ids are public on chain, so knowing one proves nothing: the ticket from when it was hired does
         const id = String(body.agent);
         const f = agentFile(id);
@@ -400,13 +407,15 @@ http.createServer((req, res) => {
         const who = await agentAccount(id);
         const p = await view(S.plan, 'get_plan', { plan_id: planId });
         if (!p || p.holder !== who.accountId) return json(res, 400, { error: 'That agent does not hold that plan.' });
+        // only now, so a request that proves nothing can't use up anyone's limits
+        const limited = orderLimit(ip, planId); if (limited) return json(res, 429, { error: limited });
         return json(res, 200, await ask(planId, p.token, body.text, who, body.brain === 'off', body.force === 'send_tokens' ? 'send_tokens' : null));
       }
       const known = db.plans[planId];
       if (!known) return json(res, 404, { error: 'Not a playground plan.' });
       if (!sameHash(known.ticket, hashed(body.ticket))) return json(res, 403, { error: 'This plan belongs to someone else. Get your own.' });
       if (url.pathname === '/near/ask') {
-        if (!allow(`ask:${ip}`, 30, 600_000) || !allow('ask:all', 300, 86_400_000) || !allow(`ask:plan:${planId}`, 20, 86_400_000)) return json(res, 429, { error: 'That plan has had enough orders for today. Get a new one.' });
+        const limited = orderLimit(ip, planId); if (limited) return json(res, 429, { error: limited });
         return json(res, 200, await ask(planId, known.coin, body.text, agent, body.brain === 'off', body.force === 'send_tokens' ? 'send_tokens' : null));
       }
       if (url.pathname === '/near/reveal') {

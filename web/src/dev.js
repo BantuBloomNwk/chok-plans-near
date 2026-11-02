@@ -44,6 +44,8 @@ async function post(path, body) {
 }
 
 let selector, modal, me = null;
+// ?as=account shows that account's plans to look at. Nothing here can act for it.
+const viewing = () => !!me && !selector?.store.getState().accounts[0];
 const fc = (methodName, args, gas = 100, deposit = 0n) => actionCreators.functionCall(methodName, args, TGAS(gas), deposit);
 
 async function send(transactions, label, say = status) {
@@ -52,7 +54,7 @@ async function send(transactions, label, say = status) {
   try {
     // browser wallets leave the page and come back; injected ones answer here
     await wallet.signAndSendTransactions({ transactions: transactions.map((t) => ({ signerId: me, ...t })) });
-    say(`${label}: done.`);
+    say(`${label}: sent. The plan below shows what happened.`);
   } catch (e) {
     // a contract's own refusal is written for people; everything around it isn't
     const raw = String(e.message || e);
@@ -65,7 +67,7 @@ async function send(transactions, label, say = status) {
 
 // the market section uses the same wallet
 window.cpn = {
-  get me() { return me; },
+  get me() { return viewing() ? null : me; },
   connect: () => modal.show(),
   send: (txs, label, say) => send(txs, label, say),
   fc, NEAR,
@@ -89,10 +91,12 @@ function sealedBlock(id, p) {
   if (p.revealed) return `<p class="small"><b>Sealed, now revealed:</b> at most ${M(p.revealed.max_per_release)} a release, ${p.revealed.min_gap_secs}s apart. The contract checked them against the commitment.</p>`;
   if (!mine) return `<p class="muted small"><b>Sealed.</b> The rules aren't in this browser. Commitment <span class="mono">${esc(p.sealed.commitment.slice(0, 16))}…</span></p>`;
   const rules = `at most ${M(mine.rules.max_per_release)} a release, ${mine.rules.min_gap_secs}s apart`;
-  if (!mine.stored) return `<p class="small"><b>One more step.</b> Your wallet stores your rules (${rules}), encrypted here for OutLayer's enclave. Until then every ask fails safely.</p><button class="btn d-seal">Seal the rules</button>`;
+  if (!mine.stored) return `<p class="small"><b>One more step.</b> Your wallet stores your rules (${rules}), encrypted here for OutLayer's enclave. Until then every ask fails and nothing moves. Keep this tab: if your rules are lost before this step, this plan can never release.</p><div class="dev-actions"><button class="btn d-seal">Seal the rules</button><button class="btn ghost d-save">Save my rules</button></div>`;
   return `<p class="small"><b>Sealed by you:</b> ${rules}. Only this browser and the enclave know that. Lose them and you can't reveal, though the plan keeps working.</p><div class="dev-actions"><button class="btn ghost d-save">Save my rules</button><button class="btn ghost d-reveal">Reveal them on chain</button></div>`;
 }
 
+const LINE = { busted: 'Busted', released: 'Released', reverted: 'Put back: the transfer failed', judge_failed: 'The judge did not answer', judge_mismatch: 'The judge answered for other rules', tightened: 'Tightened', loosen_proposed: 'Higher cap proposed', loosen_applied: 'Higher cap applied', loosen_cancelled: 'Higher cap cancelled', holder_proposed: 'New holder proposed', holder_applied: 'New holder', holder_cancelled: 'New holder cancelled', revealed: 'Rules revealed' };
+const lastLine = new Map();
 const secsUntil = (ns) => Math.max(0, Math.ceil((Number(ns) - Date.now() * 1e6) / 1e9));
 const countdown = (ns) => `<b data-until="${ns}">${secsUntil(ns)}s</b>`;
 
@@ -128,12 +132,13 @@ function changeRules(id, p) {
 }
 
 function planRow([id, p], agents) {
+  const look = viewing();
   const byAgent = p.holder !== me;
   const opensIn = Math.max(0, Math.round((Number(p.not_before) - Date.now() * 1e6) / 1e9));
   const empty = BigInt(p.balance) === 0n;
   const deposit = `<label>Put tokens in, in millions<input class="d-in" inputmode="decimal" placeholder="20"></label><button class="btn ${empty ? '' : 'ghost'} d-deposit">Deposit</button>`;
   return `<div class="card dev-plan" data-plan="${id}">
-    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3>Plan #${id}</h3><span class="tag ${byAgent ? 'p' : 'y'}">${byAgent ? 'held by your agent' : 'held by you'}</span></div>
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3>Plan #${id}</h3><span class="tag ${look ? 'g' : byAgent ? 'p' : 'y'}">${look ? 'viewing, read-only' : byAgent ? 'held by your agent' : 'held by you'}</span></div>
     <p class="muted small">${esc(p.token)} · holder <span class="mono">${esc(p.holder)}</span></p>
     <div class="stats">
       <div class="stat"><b>${M(p.cap)}</b><span>Cap a period</span></div>
@@ -141,18 +146,20 @@ function planRow([id, p], agents) {
       <div class="stat good"><b>${p.releases}</b><span>Released</span></div>
       <div class="stat bad"><b>${p.busted}</b><span>Busted</span></div>
     </div>
-    <p class="dev-next"><b>Next:</b> ${nextStep(p, byAgent)}</p>
+    ${look ? '' : `<p class="dev-next"><b>Next:</b> ${nextStep(p, byAgent)}</p>`}
+    ${p.awaiting ? '<p class="small"><b>With the judge</b> in the enclave. The verdict lands in a few seconds.</p>' : ''}
+    ${lastLine.get(id) ? `<p class="small muted">Last on its log: ${esc(lastLine.get(id))}</p>` : ''}
     ${sealedBlock(id, p)}
     ${opensIn ? `<p class="muted small">Nothing can leave for another ${opensIn}s.</p>` : ''}
-    <div class="dev-actions">
+    ${look ? '' : `<div class="dev-actions">
       ${empty ? deposit : ''}
       ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : empty ? '' : `<label>Ask to release, in millions (${M(p.released_in_period)} of ${M(p.cap)} used this period)<input class="d-amt" inputmode="decimal" placeholder="1"></label><button class="btn d-release">Ask to release</button>`}
-    </div>
-    ${changeRules(id, p)}
-    <details class="dev-more" data-more="fine-${id}"><summary class="muted small">More about this plan</summary>
+    </div>`}
+    ${look ? '' : changeRules(id, p)}
+    ${look ? '' : `<details class="dev-more" data-more="fine-${id}"><summary class="muted small">More about this plan</summary>
       ${empty ? '' : `<p class="muted small">A launched coin's bag starts inside its plan, so you don't need this unless you want to add more.</p><div class="dev-actions">${deposit}</div>`}
       <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR. <button class="btn ghost d-topup">Top up</button></p>
-    </details>
+    </details>`}
     ${p.log_skipped ? `<p class="small"><b>${p.log_skipped} event(s) aren't in its log because the budget ran out.</b> Top it up under "More about this plan".</p>` : ''}
   </div>`;
 }
@@ -173,18 +180,22 @@ function showPlans(html) {
 }
 
 async function render() {
-  const viewing = me && !selector?.store.getState().accounts[0];
-  $('dev-connect').textContent = viewing ? `Viewing ${me}, read-only. Connect your wallet to act` : me ? `${me} · disconnect` : 'Connect a NEAR testnet wallet';
+  $('dev-forms').hidden = viewing();
+  $('dev-connect').textContent = viewing() ? `Viewing ${me}, read-only. Connect your wallet to act` : me ? `${me} · disconnect` : 'Connect a NEAR testnet wallet';
   $('dev-steps').hidden = !me;
   if (!me) return;
   try {
     const s = await state();
     $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span>${c.coin === BUSDOG ? '' : ` <a href="#trade" class="small d-open" data-coin="${esc(c.coin)}">open it in the market</a>`}</div></div>`).join('');
+    await Promise.all(s.plans.filter(([, p]) => p.log_len > 0).map(async ([id, p]) => {
+      const [e] = await view(PLAN, 'get_log', { plan_id: id, from: p.log_len - 1, limit: 1 });
+      if (e) lastLine.set(id, `${LINE[e.kind] ?? e.kind}${e.amount ? ` ${M(e.amount)}` : ''}${e.reason ? `: ${e.reason}` : ''}`);
+    }));
     // anyone can make a plan and then hand it to you as holder, so those wait under their own heading
     const mine = s.plans.filter(([, p]) => p.beneficiary === me).sort((a, b) => b[0] - a[0]);
     const naming = s.plans.filter(([, p]) => p.beneficiary !== me).sort((a, b) => b[0] - a[0]);
     showPlans((mine.length ? mine.map((x) => planRow(x, s.agents)).join('') : '<p class="muted">No plans yet. Launch a coin above.</p>')
-      + (naming.length ? `<details style="grid-column:1/-1"><summary class="muted">${naming.length} plan(s) someone else made that name you as holder</summary>${naming.map((x) => planRow(x, s.agents)).join('')}</details>` : ''));
+      + (naming.length ? `<details data-more="naming" style="grid-column:1/-1"><summary class="muted">${naming.length} plan(s) someone else made that name you as holder</summary>${naming.map((x) => planRow(x, s.agents)).join('')}</details>` : ''));
     // the agents you hired: show their keys straight from the chain
     const rows = await Promise.all(s.agents.map(async ({ agent: a }) => {
       const keys = await keysOf(a);
@@ -225,12 +236,14 @@ function newSealed() {
   const rules = makeRules({ maxPerRelease: (BigInt(Math.round(max * 1e6)) * 1_000_000n).toString(), minGapSecs: Math.round(gap) });
   const commitment = commitmentOf(rules), profile = newProfile(), judgeHash = S.judges[0];
   keepSealed(commitment, { rules, profile, stored: false });
+  // a sealed plan can never be unsealed, so make sure these are really kept before any wallet opens
+  if (sealedStore()[commitment]?.rules?.salt !== rules.salt) throw new Error('This browser won\'t keep your rules (private mode?), and a sealed plan is stuck without them. Use a normal window.');
   return { commitment, judge_url: `https://chok-plans-near.netlify.app/judge/${judgeHash}.wasm`, judge_hash: judgeHash, outlayer: S.outlayer, secrets_owner: me, secrets_profile: profile };
 }
 
 // the launcher's limits, said here first so a launch isn't refused after a wallet prompt
 const termsFromForm = () => {
-  const f = { cap: Number($('dev-cap').value || 20), penalty: Number($('dev-penalty').value || 20), notice: Number($('dev-notice').value || 120), loosen: $('dev-loosen').checked };
+  const f = { cap: Number($('dev-cap').value || 20), penalty: Number($('dev-penalty').value || 20), notice: Math.floor(Number($('dev-notice').value || 120)), loosen: $('dev-loosen').checked };
   if (!(f.cap > 0 && f.cap <= 20)) throw new Error('The cap can be at most 20 million a minute: a tenth of your 200M share.');
   if (!(f.penalty >= 1 && f.penalty <= 50)) throw new Error('Each Busted has to cut the cap by 1% to 50%.');
   if (!(f.notice >= 60)) throw new Error('The public notice has to be at least 60 seconds.');
@@ -314,7 +327,7 @@ async function onPlanClick(e) {
   }
   if (e.target.classList.contains('d-loosen-apply')) await send([{ receiverId: PLAN, actions: [fc('apply_loosen', { plan_id: id }, 50)] }], 'Making the higher cap official');
   if (e.target.classList.contains('d-cancel')) await send([{ receiverId: PLAN, actions: [fc('cancel_loosen', { plan_id: id }, 50)] }], 'Cancelling the loosening');
-  if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token, ticket: (keep.get(`cpn.agents.${me}`) || []).find((a) => a.agent === p.holder)?.ticket });
+  if (e.target.classList.contains('d-agent')) window.cpnUseAgent?.({ plan: id, agent: p.holder, coin: p.token, sealed: p.sealed?.commitment, ticket: (keep.get(`cpn.agents.${me}`) || []).find((a) => a.agent === p.holder)?.ticket });
   const secret = p.sealed && sealedStore()[p.sealed.commitment];
   if (e.target.classList.contains('d-seal') && secret) {
     status('Encrypting your rules here…');
@@ -354,8 +367,10 @@ async function main() {
   sync();
   $('dev-connect').onclick = async () => { if (me && selector.store.getState().accounts[0]) { await (await selector.wallet()).signOut(); me = null; render(); } else modal.show(); };
   $('dev-faucet').onclick = async () => { status('Sending you 25M BUSDOG…'); try { await post('/near/faucet', { account: me }); status('25M BUSDOG sent.'); render(); } catch (e) { status(e.message, true); } };
-  $('dev-mycoin').onclick = () => launch().catch((e) => status(e.message, true));
-  $('dev-make').onclick = () => makePlan().catch((e) => status(e.message, true));
+  // one press, one wallet prompt: a second launch would cost another 2.3 NEAR
+  const once = (id, f) => { const b = $(id); b.onclick = () => { if (b.disabled) return; b.disabled = true; f().catch((e) => status(e.message, true)).finally(() => { b.disabled = false; }); }; };
+  once('dev-mycoin', launch);
+  once('dev-make', makePlan);
   $('dev-balances').onclick = (e) => { const b = e.target.closest('.d-open'); if (b) window.cpnMarketOpen?.(b.dataset.coin); };
   $('dev-plans').onclick = (e) => onPlanClick(e).catch((err) => status(err.message, true));
   setInterval(() => { if (me && !document.hidden) render(); }, 8000);

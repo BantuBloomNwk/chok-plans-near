@@ -46,7 +46,7 @@ export async function think({ key, text, readPlan, act, maxActions = 5, force = 
     const msg = out.choices[0].message;
     if (process.env.BRAIN_DEBUG) console.error(JSON.stringify(out.choices[0]).slice(0, 800));
     messages.push({ role: 'assistant', content: msg.content ?? '', tool_calls: msg.tool_calls });
-    if (!msg.tool_calls?.length) return { model: MODEL, system: SYSTEM, steps, reply: msg.content || (out.choices[0].finish_reason === 'length' ? '(ran out of room to answer)' : ''), attestation: att, answers };
+    if (!msg.tool_calls?.length) return { forced: !!force, model: MODEL, system: SYSTEM, steps, reply: msg.content || (out.choices[0].finish_reason === 'length' ? '(ran out of room to answer)' : ''), attestation: att, answers };
     for (const tc of msg.tool_calls) {
       let args = {};
       try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
@@ -61,5 +61,5 @@ export async function think({ key, text, readPlan, act, maxActions = 5, force = 
       messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });
     }
   }
-  return { model: MODEL, system: SYSTEM, steps, reply: '(stopped after six rounds)', attestation: att, answers };
+  return { forced: !!force, model: MODEL, system: SYSTEM, steps, reply: '(stopped after six rounds)', attestation: att, answers };
 }

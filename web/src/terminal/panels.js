@@ -47,18 +47,34 @@ export function renderStats(el, trades, quote, state) {
   el.querySelector('[data-stats]').onclick = (e) => { const w = e.target.dataset.w; if (w) { state.window = w; renderStats(el, trades, quote, state); } };
 }
 
+const KINDS = { busted: 'Busted', released: 'Released', reverted: 'Put back', tightened: 'Tightened', loosen_proposed: 'Loosening proposed', loosen_cancelled: 'Loosening cancelled', loosen_applied: 'Loosening applied', holder_proposed: 'New holder proposed', holder_cancelled: 'New holder cancelled', holder_applied: 'New holder', revealed: 'Rules revealed', judge_failed: 'Judge did not answer', judge_mismatch: 'Judge answered for other rules', judge_cleared: 'Wait cleared' };
+/** Every line of the plan's own log on chain, newest first. */
+function planTable(m) {
+  const rows = (m.planLog ?? []).slice().reverse().map((e) => {
+    const n = e.amount ? Number(BigInt(e.amount) / 1_000_000n) : null;
+    const cls = e.kind === 'busted' ? 'down' : e.kind === 'released' ? 'up' : '';
+    return `<tr><td class="${cls}"><b>${esc(KINDS[e.kind] ?? e.kind)}</b></td><td>${n == null ? '' : fmtCompact(n)}</td><td style="white-space:normal;text-align:left">${esc(e.reason ?? '')}</td><td>${fmtCompact(Number(BigInt(e.cap) / 1_000_000n))}</td><td class="muted" data-at="${Number(e.at_ms)}">${ago(Number(e.at_ms))}</td></tr>`;
+  }).join('');
+  return `<table class="tp-table"><thead><tr><th>What</th><th>Amount</th><th style="text-align:left">Why</th><th>Cap after</th><th>Age</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="muted">Nothing on this plan yet.</td></tr>'}</tbody></table><p class="tp-note">Read from the plan contract's own log.</p>`;
+}
+
+/** Ages tick by themselves, so a quiet coin doesn't look frozen. */
+export function tickAges(el) {
+  el?.querySelectorAll('[data-at]').forEach((c) => { const t = ago(Number(c.dataset.at)); if (c.textContent !== t) c.textContent = t; });
+}
+
 /** The tape and the holders, under the chart. */
 export function renderTabs(el, m, state) {
   const last = m.trades[m.trades.length - 1]?.price ?? m.start.price;
   const pos = positions(m.trades, last, m.supply);
   const holding = pos.filter((p) => p.tokens > 0);
   const tag = (who) => `${m.devs.has(who) ? ' <em>DEV</em>' : ''}${who === m.me ? ' <em class="you">YOU</em>' : ''}`;
-  const tape = m.trades.slice().reverse().slice(0, 200).map((t) => `<tr class="${m.devs.has(t.who) ? 'dev' : ''}"><td>${acct(t.who, m.link, tag(t.who))}</td><td class="${t.buy ? 'up' : 'down'}"><b>${t.buy ? 'Buy' : 'Sell'}</b></td><td>${fmtCompact(t.quote, 4)}</td><td>${fmtCompact(t.tokens)}</td><td>${fmtCompact(t.price * m.supply)}</td><td class="muted">${ago(t.t)}</td></tr>`).join('');
+  const tape = m.trades.slice().reverse().slice(0, 200).map((t) => `<tr class="${m.devs.has(t.who) ? 'dev' : ''}"><td>${acct(t.who, m.link, tag(t.who))}</td><td class="${t.buy ? 'up' : 'down'}"><b>${t.buy ? 'Buy' : 'Sell'}</b></td><td>${fmtCompact(t.quote, 4)}</td><td>${fmtCompact(t.tokens)}</td><td>${fmtCompact(t.price * m.supply)}</td><td class="muted" data-at="${t.t}">${ago(t.t)}</td></tr>`).join('');
   const holders = holding.map((p) => `<tr class="${m.devs.has(p.who) ? 'dev' : ''}"><td>${acct(p.who, m.link, tag(p.who))}</td><td>${fmtCompact(p.tokens)}</td><td>${p.share.toFixed(2)}%</td><td>${fmtCompact(p.value, 3)}</td><td class="${p.pnl >= 0 ? 'up' : 'down'}">${p.pnl >= 0 ? '+' : ''}${fmtCompact(p.pnl, 3)}</td></tr>`).join('');
   const q = esc(m.quote);
   const scroll = el.querySelector('.tp-wrap')?.scrollTop ?? 0;
-  el.innerHTML = `<div class="tp-tabs" role="tablist"><button data-t="trades" class="${state.tab === 'trades' ? 'on' : ''}">Trades<i>${m.trades.length}</i></button><button data-t="holders" class="${state.tab === 'holders' ? 'on' : ''}">Holders<i>${holding.length}</i></button></div>
-    <div class="tp-wrap">${state.tab === 'trades'
+  el.innerHTML = `<div class="tp-tabs" role="tablist"><button data-t="trades" class="${state.tab === 'trades' ? 'on' : ''}">Trades<i>${m.trades.length}</i></button><button data-t="holders" class="${state.tab === 'holders' ? 'on' : ''}">Holders<i>${holding.length}</i></button>${m.planLog ? `<button data-t="plan" class="${state.tab === 'plan' ? 'on' : ''}">Plan log<i>${m.planLog.length}</i></button>` : ''}</div>
+    <div class="tp-wrap">${state.tab === 'plan' ? planTable(m) : state.tab === 'trades'
       ? `<table class="tp-table"><thead><tr><th>Trader</th><th>Side</th><th>${q}</th><th>${esc(m.symbol)}</th><th>MCap</th><th>Age</th></tr></thead><tbody>${tape || '<tr><td colspan="6" class="muted">No trades yet. Be the first.</td></tr>'}</tbody></table>`
       : `<table class="tp-table"><thead><tr><th>Holder</th><th>Held</th><th>% supply</th><th>Worth (${q})</th><th>Gain or loss (${q})</th></tr></thead><tbody>${holders || '<tr><td colspan="5" class="muted">Nobody holds any from the market yet.</td></tr>'}</tbody></table><p class="tp-note">Worked out from market trades. Tokens someone was sent directly don't show here, and the plan's locked bag isn't a holder.</p>`}</div>`;
   el.querySelector('.tp-tabs').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { state.tab = b.dataset.t; renderTabs(el, m, state); el.querySelector('.tp-wrap').scrollTop = 0; } };

@@ -252,7 +252,7 @@
   <ol class="dev-guide"><li><b>Connect</b> your wallet.</li><li><b>Launch</b> a coin in the cards below, with your plan's terms. Your 20% goes straight into the plan, so there's nothing to deposit.</li><li>Under <b>Your plans</b>, ask to release <b>more than the cap</b> and get Busted. Then ask for <b>less</b>, and it reaches your wallet. Each plan tells you what's next.</li><li>Open <b>Trade</b> to buy and sell your coin. Your wallet needs the coin to sell it.</li><li>Optional: launch one with <b>sealed rules</b>, or try <b>Change the rules</b> on a plan.</li></ol>
   <p id="dev-status" class="muted dev-toast" hidden></p>
   <div id="dev-steps" hidden>
-    <div class="dev-grid">
+    <div class="dev-grid" id="dev-forms">
       <div class="card launch">
         <h3>1 · Set the plan's terms</h3>
         <p class="muted small">These go on chain with your coin. The only one that can ever change is the cap, and only if you tick the box below. The period is one minute so you can see it work.</p>
@@ -441,11 +441,12 @@ function hood(out) {
   const ck = (pass, text) => `<div class="ck"><b class="${pass ? '' : 'x'}">${pass ? '✓' : '✗'}</b><span>${text}</span></div>`;
   const att = out.attestation.checks.map((c) => ck(c.pass, `${esc(c.name.replace(/^0x[0-9a-f]{40} /, ''))}${c.detail && c.detail.length < 60 ? ` <span class="muted">(${esc(c.detail)})</span>` : ''}`)).join('');
   const sig = out.answers.map((a, i) => ck(a.passed, `answer ${i + 1} signed by <span class="mono">${esc(a.signer)}</span>, ${a.signerAttested ? 'the attested key' : 'NOT the attested key'}, ${a.hashesMatch ? 'hashes match what we sent and got' : 'hashes do NOT match'}`)).join('');
-  const calls = out.steps.map((s) => `${s.call.name}(${JSON.stringify(s.call.arguments)})\n  → ${JSON.stringify(s.result.outcome ?? s.result)}`).join('\n');
+  const calls = out.steps.map((s) => `${s.call.name}(${JSON.stringify(s.call.arguments)})\n  → ${JSON.stringify(s.result.outcome ?? s.result)}${s.result.error ? ` (${s.result.error})` : ''}`).join('\n');
   return `<details class="hood"><summary>Under the hood: ${esc(out.model)} in a TEE</summary>
     <p class="muted">Fresh nonce <span class="mono">${esc(out.attestation.nonce.slice(0, 16))}…</span></p>${att}${sig}
     <p><b>System prompt</b></p><pre>${esc(out.system)}</pre>
     <p><b>Tool calls, raw</b></p><pre>${esc(calls || '(none)')}</pre>
+    ${out.forced ? `<p><b>This call was forced</b> with tool_choice, to show the key doing its job. Left alone, this model usually says no. That's luck; the key is the guarantee.</p>` : ''}
     <p class="muted">The model holds no keys. Each call above was signed by the agent's one function-call key, and NEAR plus the sealed judge decided.</p></details>`;
 }
 
@@ -472,6 +473,7 @@ async function getPlan() {
   ['get-plan', 'get-plan-2'].forEach((id) => { $(id).disabled = true; $(id).textContent = 'Making your plan…'; });
   try {
     mine = await post('/near/plan'); store.set('cpn.plan2', mine);
+    $('reveal').hidden = false;
     showPlan();
     say(`Plan #${mine.plan} is yours: 20M tokens inside, a public cap of 10M a minute, and sealed rules nobody's told me. What should I do?`, 'agent');
     $('play').scrollIntoView();
@@ -558,8 +560,8 @@ async function main() {
 }
 
 // "Be the dev" hands its own plan and agent to this console
-window.cpnUseAgent = ({ plan, agent, coin, ticket }) => {
-  mine = { plan, agent, coin, ticket, commitment: '(a public plan: no sealed rules)', own: true };
+window.cpnUseAgent = ({ plan, agent, coin, ticket, sealed }) => {
+  mine = { plan, agent, coin, ticket, commitment: sealed || '(a public plan: no sealed rules)', own: true };
   showPlan();
   $('reveal').hidden = true;
   say(`Now I'm your agent, <span class="mono">${esc(agent)}</span>, holding your plan #${plan}. My one key can only call request_release, and only you have the ticket to give me orders. What should I do?`, 'agent');
