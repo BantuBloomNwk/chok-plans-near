@@ -17,6 +17,14 @@ test('candles open where the last closed, and quiet minutes are flat', () => {
   assert.equal(bars[5].close, 1.5);
 });
 
+test('with empty time skipped, candles still chain and only busy minutes get one', () => {
+  const { bars } = fold([tr(0, 2), tr(0.5, 3), tr(3, 1.5, false)], { ...opts, skipEmpty: true });
+  assert.deepEqual(bars.map((b) => (b.timestamp - t0) / 60_000), [0, 3]);
+  assert.deepEqual([bars[0].open, bars[0].close, bars[1].open, bars[1].close], [1, 3, 3, 1.5]);
+  const none = fold([], { ...opts, skipEmpty: true });
+  assert.equal(none.bars.length, 1);
+});
+
 test('a timeframe only regroups trades: volume and the last close never change', () => {
   const m = sampleMarket();
   const now = m.trades.at(-1).t + 1000;

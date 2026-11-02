@@ -3,7 +3,7 @@
 // bubble for every trader, with the dev marked apart. Candles and axes come from KLineChart
 // (Apache-2.0, no logo); the bubbles, stamps, legend and toolbar are ours.
 //
-//   const t = createTerminal(el, { symbol: 'DANDOG', quote: 'NEAR', supply: 1e9, venue: 'CHOK', link });
+//   const t = createTerminal(el, { symbol: 'DANDOG', quote: 'SOL', supply: 1e9, venue: 'CHOK', link, fx: { label: 'USD', perQuote: 180 } });
 //   t.setMarket({ trades, marks, devs: new Set([...]), me, start: { t, price } });
 import { init, dispose, registerIndicator } from 'klinecharts';
 import { PERIODS, fold, pickPeriod, fmtPrice, fmtCompact, foldZeros, pct, short, precisionFor } from './data.js';
@@ -149,10 +149,11 @@ const MARKERS = [['big', 'Big trades + dev'], ['all', 'All traders'], ['dev', 'D
 const RANGES = [['15m', 900], ['1h', 3600], ['6h', 21600], ['1D', 86400], ['All', null]];
 
 export function createTerminal(root, opts) {
-  const o = { quote: 'NEAR', supply: 1_000_000_000, venue: 'CHOK', symbol: '', link: () => null, ...opts };
+  const o = { quote: 'NEAR', supply: 1_000_000_000, venue: 'CHOK', symbol: '', link: () => null, fx: null, ...opts };
   const st = {
     period: null,
     show: keep.get('show', 'mcap'),
+    unit: o.fx ? keep.get('unit', o.fx.label) : o.quote,
     type: keep.get('type', 'candle_solid'),
     markers: keep.get('markers', window.innerWidth <= 700 ? 'dev' : 'big'),
     stamps: keep.get('stamps', true),
@@ -169,6 +170,7 @@ export function createTerminal(root, opts) {
       <details class="term-menu" data-menu="studies"><summary>Indicators</summary><div>${STUDIES.map(([v, l]) => `<label><input type="checkbox" data-study="${v}"> ${l}</label>`).join('')}</div></details>
       <details class="term-menu" data-menu="markers"><summary>Chart markers</summary><div>${MARKERS.map(([v, l]) => `<label><input type="radio" name="term-markers-${o.symbol}" data-markers="${v}"> ${l}</label>`).join('')}<label class="sep"><input type="checkbox" data-stamps> Plan stamps</label></div></details>
       <div class="term-toggle" data-g="show" role="group" aria-label="Show price or market cap"><button data-v="price">Price</button><i>/</i><button data-v="mcap">MCap</button></div>
+      ${o.fx ? `<div class="term-toggle" data-g="unit" role="group" aria-label="Show in"><button data-v="${o.fx.label}">${o.fx.label}</button><i>/</i><button data-v="${o.quote}">${o.quote}</button></div>` : ''}
       <span class="term-grow"></span>
       <button class="term-ic" data-a="now" title="Back to the latest candle">${svg('now')}</button>
       <button class="term-ic" data-a="shot" title="Save a picture of the chart">${svg('camera')}</button>
@@ -192,8 +194,10 @@ export function createTerminal(root, opts) {
   const $ = (s) => root.querySelector(s);
   const plot = $('.term-plot');
 
-  const valueOf = (price) => (st.show === 'mcap' ? price * o.supply : price);
-  const title = () => (st.show === 'mcap' ? `Market cap (${o.quote})` : `Price (${o.quote})`);
+  // what one of the quote coin is worth in the unit on screen
+  const rate = () => (o.fx && st.unit === o.fx.label ? o.fx.perQuote : 1);
+  const valueOf = (price) => (st.show === 'mcap' ? price * o.supply : price) * rate();
+  const title = () => (st.show === 'mcap' ? `Market cap (${st.unit})` : `Price (${st.unit})`);
 
   const chart = init($('.term-canvas'), {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -243,8 +247,15 @@ export function createTerminal(root, opts) {
       if (!list.length) return;
       const from = list[Math.max(0, vis.from)]?.timestamp ?? 0, to = list[Math.min(list.length - 1, vis.to)]?.timestamp ?? 0;
       const size = st.period.secs * 1000;
-      const inView = (t) => { const b = Math.floor(t / size) * size; return b >= from && b <= to; };
-      const px = (t) => xAxis.convertTimestampToPixel(Math.floor(t / size) * size);
+      // the candle a moment belongs to: with empty time skipped, the last one at or before it
+      const snap = (t) => {
+        const want = Math.floor(t / size) * size;
+        let lo = 0, hi = list.length - 1, at = list[0].timestamp;
+        while (lo <= hi) { const mid = (lo + hi) >> 1; if (list[mid].timestamp <= want) { at = list[mid].timestamp; lo = mid + 1; } else hi = mid - 1; }
+        return at;
+      };
+      const inView = (t) => { const b = snap(t); return b >= from && b <= to; };
+      const px = (t) => xAxis.convertTimestampToPixel(snap(t));
 
       // stamps along the top, for what the dev's plan did
       if (st.stamps) {
@@ -322,23 +333,25 @@ export function createTerminal(root, opts) {
     const prec = chart.getSymbol()?.pricePrecision ?? 2;
     const f = (v) => (st.show === 'mcap' ? fmtCompact(v) : foldZeros(v.toFixed(prec).replace(/\.?0+$/, '')));
     const change = b.close - b.open, up = change >= 0, cls = up ? 'up' : 'down';
-    $('.term-legend').innerHTML = `<div class="l1"><b>${esc(o.symbol)}/${esc(o.quote)}</b> ${esc(title())} · ${esc(st.period?.id ?? '')} · ${esc(o.venue)}
+    $('.term-legend').innerHTML = `<div class="l1"><b>${esc(o.symbol)}/${esc(st.unit)}</b> ${esc(title())} · ${esc(st.period?.id ?? '')} · ${esc(o.venue)}
       <span class="ohlc ${cls}">O<em>${f(b.open)}</em> H<em>${f(b.high)}</em> L<em>${f(b.low)}</em> C<em>${f(b.close)}</em> <em>${f(change)} (${pct(b.open ? (change / b.open) * 100 : 0)})</em></span>${st.capped ? ' <span class="muted">showing the latest 4,000 candles</span>' : ''}</div>
-      <div class="l2">Volume <em class="${cls}">${fmtCompact(b.volume ?? 0)} ${esc(o.quote)}</em></div>`;
+      <div class="l2">Volume <em class="${cls}">${fmtCompact(b.volume ?? 0)} ${esc(st.unit)}</em></div>`;
   }
 
   function compute() {
     const now = Date.now();
-    const { bars, capped } = fold(st.trades, { secs: st.period.secs, valueOf, start: st.start, now });
-    const scale = st.show === 'mcap' ? o.supply : 1;
-    for (const b of bars) b.scale = scale;
+    const { bars, capped } = fold(st.trades, { secs: st.period.secs, valueOf, start: st.start, now, skipEmpty: o.skipEmpty !== false });
+    const scale = st.show === 'mcap' ? o.supply : 1, r = rate();
+    for (const b of bars) { b.scale = scale; b.volume *= r; b.turnover *= r; }
     st.capped = capped;
     return bars;
   }
 
   function symbol() {
     const values = st.bars.length ? st.bars.map((b) => b.low) : [valueOf(st.start?.price ?? 1)];
-    chart.setSymbol({ ticker: `${o.symbol}/${o.quote}`, pricePrecision: precisionFor(values), volumePrecision: 3 });
+    // a market cap in the hundreds or more reads better without cents
+    const least = Math.min(...values.filter((v) => v > 0));
+    chart.setSymbol({ ticker: `${o.symbol}/${st.unit}`, pricePrecision: isFinite(least) && least >= 100 ? 0 : precisionFor(values), volumePrecision: 3 });
   }
 
   chart.setDataLoader({
@@ -347,21 +360,29 @@ export function createTerminal(root, opts) {
     unsubscribeBar: () => { st.live = null; },
   });
 
+  // the latest run of trades: at most 40, going back no further than the last quiet six hours
+  function lately() {
+    const list = st.trades.slice(-40);
+    for (let i = list.length - 1; i > 0; i--) if (list[i].t - list[i - 1].t > 6 * 3_600_000) return list.slice(i);
+    return list;
+  }
+
   // show about this many seconds, ending now
   function fit(seconds) {
     const w = plot.clientWidth - 90;
     const size = st.period.secs * 1000;
-    const first = st.trades[0]?.t, last = st.trades[st.trades.length - 1]?.t;
+    const first = lately()[0]?.t, last = st.trades[st.trades.length - 1]?.t;
     if (!seconds && first != null) {
       // the first view is where the trades are, not a long flat line up to now
-      const count = Math.ceil((last - first) / size) + 6;
+      const count = st.bars.filter((b) => b.timestamp >= Math.floor(first / size) * size && b.timestamp <= last).length + 4;
       chart.setBarSpace(Math.max(2, Math.min(24, w / Math.max(count, 12))));
       chart.scrollToTimestamp(Math.floor(last / size) * size);
       chart.scrollByDistance(-30);
       return;
     }
     const bars = st.bars.length || 1;
-    const count = seconds ? Math.min(bars, seconds / st.period.secs) : bars;
+    const since = seconds ? Date.now() - seconds * 1000 : 0;
+    const count = seconds ? st.bars.filter((b) => b.timestamp >= since).length : bars;
     chart.setBarSpace(Math.max(2, Math.min(24, w / Math.max(count, 8))));
     chart.scrollToRealTime();
   }
@@ -381,6 +402,7 @@ export function createTerminal(root, opts) {
     root.querySelectorAll('[data-g="period"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.period?.id));
     root.querySelectorAll('[data-g="type"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.type));
     root.querySelectorAll('[data-g="show"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.show));
+    root.querySelectorAll('[data-g="unit"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.unit));
     root.querySelectorAll('[data-g="axis"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === st.axis));
     root.querySelectorAll('[data-markers]').forEach((b) => { b.checked = b.dataset.markers === st.markers; });
     root.querySelectorAll('[data-stamps]').forEach((b) => { b.checked = st.stamps; });
@@ -467,6 +489,7 @@ export function createTerminal(root, opts) {
     if (g === 'period') { st.period = PERIODS.find((p) => p.id === b.dataset.v); reload(); }
     if (g === 'type') { st.type = b.dataset.v; keep.set('type', st.type); chart.setStyles({ candle: { type: st.type } }); paintBar(); }
     if (g === 'show') { st.show = b.dataset.v; keep.set('show', st.show); reload(); }
+    if (g === 'unit') { st.unit = b.dataset.v; keep.set('unit', st.unit); reload(); }
     if (g === 'axis') setAxis(b.dataset.v);
     if (g === 'range') {
       const secs = RANGES.find(([l]) => l === b.dataset.v)[1];
@@ -520,12 +543,14 @@ export function createTerminal(root, opts) {
       Object.assign(st, { trades: trades.slice().sort((a, b) => a.t - b.t), marks, devs, me, start });
       if (first) {
         // the timeframe that suits the trades themselves
-        const span = st.trades.length ? (st.trades[st.trades.length - 1].t - st.trades[0].t) / 1000 : 900;
+        // and to what's been happening lately, not a stray trade from days ago
+        const recent = lately();
+        const span = recent.length ? (recent[recent.length - 1].t - recent[0].t) / 1000 : 900;
         st.period = pickPeriod(Math.max(300, span), 40);
         reload();
         return;
       }
-      if (!changed && st.bars.length && st.bars[st.bars.length - 1].timestamp === Math.floor(Date.now() / (st.period.secs * 1000)) * (st.period.secs * 1000)) return;
+      if (!changed && (o.skipEmpty !== false || (st.bars.length && st.bars[st.bars.length - 1].timestamp === Math.floor(Date.now() / (st.period.secs * 1000)) * (st.period.secs * 1000)))) return;
       const next = compute();
       const prev = st.bars;
       st.bars = next;

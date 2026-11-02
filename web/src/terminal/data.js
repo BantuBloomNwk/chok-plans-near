@@ -25,10 +25,26 @@ export function pickPeriod(spanSecs, bars = 150) {
  * tells the truth about how long nothing happened, and each candle opens where the last closed.
  * `valueOf` turns a price into what is charted (the price, or the market cap).
  */
-export function fold(trades, { secs, valueOf, start, now, maxBars = 4000 }) {
+export function fold(trades, { secs, valueOf, start, now, maxBars = 4000, skipEmpty = false }) {
   const size = secs * 1000;
   const floor = (t) => Math.floor(t / size) * size;
   const sorted = trades.slice().sort((a, b) => a.t - b.t);
+  // only the candles something happened in, side by side, each opening where the last closed. It's how
+  // a chart of a thinly traded coin stays readable. The time axis still says when each one was.
+  if (skipEmpty) {
+    const bars = [];
+    let close = valueOf(start.price);
+    for (const x of sorted) {
+      const ts = floor(x.t), v = valueOf(x.price);
+      let bar = bars[bars.length - 1];
+      if (!bar || bar.timestamp !== ts) { bar = { timestamp: ts, open: close, high: close, low: close, close, volume: 0, tokens: 0, turnover: 0 }; bars.push(bar); }
+      bar.high = Math.max(bar.high, v); bar.low = Math.min(bar.low, v); bar.close = v;
+      bar.volume += x.quote; bar.tokens += x.tokens; bar.turnover += x.quote;
+      close = v;
+    }
+    if (!bars.length) bars.push({ timestamp: floor(start.t), open: close, high: close, low: close, close, volume: 0, tokens: 0, turnover: 0 });
+    return { bars: bars.slice(-maxBars), capped: bars.length > maxBars };
+  }
   const firstT = sorted.length ? Math.min(start.t, sorted[0].t) : start.t;
   const lastT = Math.max(now, sorted.length ? sorted[sorted.length - 1].t : now, start.t);
   const end = floor(lastT);
