@@ -123,7 +123,7 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 ## What it isn't, yet
 
 - It's on testnet only, and it hasn't been audited.
-- Of the wallets on the page, we've run Meteor by hand. HERE and Intear are listed but not yet proven.
+- Of the wallets on the page, we've run the whole loop by hand in Meteor: launch, Busted, release, raising a cap, proposing a new holder, a sealed launch, buy, sell and claiming fees. HERE and Intear are listed but not yet proven.
 - The playground's accounts are topped up from NEAR's testnet helper, and its daily limits (coins, sponsored launches, plans, orders per plan) are set to what that can carry. It says so when a limit is reached.
 - **The playground server holds keys** for the demo's dev account, the quick-try agent and the seed its sealed rules come from, all in one process, so visitors can try a plan without a wallet. It also knows every quick-try plan's sealed rules, which is why revealing is a button there. It doesn't know the rules of a plan a dev sealed themselves.
 - **In "Be the dev", your wallet signs your launch and your plan, unless it's short of NEAR and we pay. If you hire an agent, our server makes and keeps its key so it can act for you.** That key can only call `request_release` on the plan contract, and only you get the ticket to give it orders. The server keeps that ticket's hash.
