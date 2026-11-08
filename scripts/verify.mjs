@@ -24,6 +24,8 @@ import { providers } from 'near-api-js';
 const S = JSON.parse(fs.readFileSync(new URL('../deployment.json', import.meta.url)));
 // the same public RPCs the page uses, so a rate limit on one isn't reported as a broken claim
 const rpc = new providers.FailoverRpcProvider(['https://test.rpc.fastnear.com', 'https://rpc.testnet.fastnear.com', 'https://near-testnet.drpc.org'].map((url) => new providers.JsonRpcProvider({ url }, { retries: 4, backoff: 2, wait: 800 })));
+// past transactions live only on archive nodes: ordinary testnet nodes keep about two days of them
+const archive = new providers.FailoverRpcProvider(['https://archival-rpc.testnet.fastnear.com', 'https://archival-rpc.testnet.near.org'].map((url) => new providers.JsonRpcProvider({ url }, { retries: 3, backoff: 2, wait: 500 })));
 const sha = (b) => crypto.createHash('sha256').update(b).digest();
 const local = (p) => { try { return fs.readFileSync(new URL(`../${p}`, import.meta.url)); } catch { return null; } };
 let pass = 0, fail = 0, skipped = 0;
@@ -124,6 +126,24 @@ const revealed = sealed.filter(([, p]) => p.revealed).length;
 if (revealed) check(bad.length === 0, `every revealed plan matches the commitment it was made with (${revealed} checked)`, bad.length ? `wrong: ${bad.map(([id]) => id).join(', ')}` : '');
 else skip('revealed plans match their commitments', 'none revealed yet');
 
+// 5b: a proof for each verdict the judge gave: OutLayer's public record, Intel's signature on the quote,
+// and the request and answer it commits to, all checked against the chain
+{
+  const { proveVerdict } = await import('./judge-proof.mjs');
+  const log = local('attack-log.json');
+  const judged = log ? JSON.parse(log).log.filter((l) => /model said|rule parser/.test(l.got || '')).flatMap((l) => l.txs || []) : [];
+  const pinned = [...judges.keys()][0];
+  if (!pinned || !judged.length) skip('proofs for the judge\'s verdicts', 'no judged requests in the attack log yet');
+  else {
+    console.log(`\nthe judge's verdicts: ${judged.length} in the attack log, each checked against OutLayer's record, Intel and the chain`);
+    for (const tx of judged) {
+      const checks = await proveVerdict(tx, { pinned }).catch((e) => [{ name: 'the proof can be read', pass: false, detail: e.message }]);
+      const bad = checks.filter((c) => !c.pass);
+      check(bad.length === 0, `verdict ${tx.slice(0, 10)}…: ${checks.length - bad.length} of ${checks.length} checks hold`, bad.length ? bad.map((c) => `${c.name}: ${c.detail}`).join('; ') : checks[0]?.link ?? '');
+    }
+  }
+}
+
 // 6: the attack log
 const logFile = local('attack-log.json');
 if (logFile) {
@@ -133,12 +153,12 @@ if (logFile) {
   let ok = 0;
   const wrong = [], unread = [];
   for (const step of run.log.flatMap((l) => (l.txs || []).map((tx) => ({ ...l, tx, viaAgent: true })))) {
-    const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
+    const tx = await archive.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
     if (!tx) { unread.push(`${step.n}`); continue; }
     !tx.receipts_outcome.some((o) => o.outcome.status?.Failure) ? ok++ : wrong.push(`${step.n}`);
   }
   for (const step of run.log.filter((l) => l.tx)) {
-    const tx = await rpc.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
+    const tx = await archive.txStatus(step.tx, step.signer, 'FINAL').catch(() => null);
     if (!tx) { unread.push(`${step.n}`); continue; }
     const failures = [tx.transaction_outcome, ...tx.receipts_outcome].filter((o) => o.outcome.status?.Failure).map((o) => JSON.stringify(o.outcome.status.Failure));
     const failed = failures.length > 0;

@@ -405,9 +405,26 @@ async function showLog() {
     const what = (e) => e.kind === 'transfer' ? `send ${e.amount ? `${+(e.amount / 1e6).toFixed(2)}M ` : ''}to ${esc(e.to || '?')}` : e.kind === 'loosen' ? 'loosen the cap' : `release ${+((e.amount || 0) / 1e6).toFixed(2)}M`;
     $('p-log').innerHTML = list.map((e) => {
       const o = e.outcome === 'released' ? 'released' : e.outcome === 'busted' ? 'busted' : 'refused';
-      return `<li><span class="muted">${time(e.at)}</span><span class="o ${o}">${o.toUpperCase()}</span><span class="w">${what(e)}${e.reason ? ` <span class="muted">· ${esc(String(e.reason).replace('sealed: ', 'sealed rule: '))}</span>` : ''}</span>${e.tx ? `<a href="${tx(e.tx)}" target="_blank" rel="noreferrer">tx</a>` : e.block ? `<a href="https://testnet.nearblocks.io/blocks/${e.block}" target="_blank" rel="noreferrer">block</a>` : '<span class="muted" title="NEAR rejected the key before anything reached the chain">no tx</span>'}</li>`;
+      return `<li><span class="muted">${time(e.at)}</span><span class="o ${o}">${o.toUpperCase()}</span><span class="w">${what(e)}${e.reason ? ` <span class="muted">· ${esc(String(e.reason).replace('sealed: ', 'sealed rule: '))}</span>` : ''}</span>${e.tx ? `<a href="${tx(e.tx)}" target="_blank" rel="noreferrer">tx</a>${o !== 'refused' ? ` <a class="proof" data-proof="${esc(e.tx)}" href="#" hidden target="_blank" rel="noreferrer">proof</a>` : ''}` : e.block ? `<a href="https://testnet.nearblocks.io/blocks/${e.block}" target="_blank" rel="noreferrer">block</a>` : '<span class="muted" title="NEAR rejected the key before anything reached the chain">no tx</span>'}</li>`;
     }).join('');
+    proofLinks();
   } catch {}
+}
+
+// each verdict the judge gave links to OutLayer's public record of the run: the code that ran, the
+// request and the answer, and Intel's signed quote. Only shown when the record names the pinned judge
+const proofs = new Map();
+async function proofLinks() {
+  for (const a of document.querySelectorAll('a[data-proof]')) {
+    const tx = a.dataset.proof;
+    if (!proofs.has(tx)) proofs.set(tx, fetch(`https://testnet-api.outlayer.ai/attestations/by-tx/${tx}`).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+    const rec = await proofs.get(tx);
+    if (rec && rec.wasm_hash === info.judge.hash && rec.executed_wasm_sha256 === info.judge.hash) {
+      a.href = `https://app.outlayer.ai/attestation/${rec.id}`;
+      a.title = 'OutLayer\'s record of this run, with the Intel-signed quote. npm run verify checks it all against the chain.';
+      a.hidden = false;
+    }
+  }
 }
 
 function showPlan() {
@@ -533,7 +550,7 @@ async function verifiedPanel() {
   const ok = planKeys === 0 && marketKeys === 0 && launcherKeys === 0 && (!att.checks.length || att.passed);
   $('vf-tick').textContent = ok ? '✓' : '✗'; $('vf-tick').className = `tick ${ok ? 'ok' : 'no'}`;
   $('vf-sum').textContent = `${chain.length + names.length} checks, done just now. Open to see them.`;
-  $('vf-list').innerHTML = `<h4>The contracts, read by your browser</h4>${chain.join('')}${model.length ? `<h4>The model, ${esc(att.model)}, in NEAR AI's TEE</h4><p class="muted small" style="margin:0">Checked by our server with a fresh nonce <span class="mono">${esc(String(att.nonce).slice(0, 16))}…</span>. Every answer is then signature-checked, under "Under the hood" on that answer. Run <span class="mono">npm run verify</span> to do all of this yourself.</p>${model.join('')}` : ''}<h4>The judge</h4><p class="muted small" style="margin:0">Each judged release links its transaction, and OutLayer's verdict is in that transaction's receipts.</p>`;
+  $('vf-list').innerHTML = `<h4>The contracts, read by your browser</h4>${chain.join('')}<h4>The judge, in OutLayer's TEE</h4>${row(true, 'Every verdict links to a proof of the run', 'Each Busted or Released in your plan log gets a <b>proof</b> link: OutLayer\'s record naming the pinned judge, the request, the answer and an Intel-signed quote. <span class="mono">npm run verify</span> checks Intel\'s signature and that the request and answer match the chain.')}${model.length ? `<h4>The model, ${esc(att.model)}, in NEAR AI's TEE</h4><p class="muted small" style="margin:0">Checked by our server with a fresh nonce <span class="mono">${esc(String(att.nonce).slice(0, 16))}…</span>. Every answer is then signature-checked, under "Under the hood" on that answer. Run <span class="mono">npm run verify</span> to do all of this yourself.</p>${model.join('')}` : ''}<h4>The judge</h4><p class="muted small" style="margin:0">Each judged release links its transaction, and OutLayer's verdict is in that transaction's receipts.</p>`;
 }
 
 async function checkJudge() {
