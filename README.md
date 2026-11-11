@@ -142,6 +142,10 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 
 CHOK started on Solana, where the launchpad, its plans, its sealed schedules (on Arcium) and its live rooms (on MagicBlock) already run on devnet. That code isn't in this repo and isn't part of this entry. Everything here was written for NEAR during the hackathon: the plan, market and token contracts, the judge, the agent, the playground and the page.
 
+## Hackathon window
+
+There is no pre-hackathon code in this repo. The first commit, [f45d68b](https://github.com/BantuBloomNwk/chok-plans-near/commit/f45d68b), was made on 1 November 2026 at 07:23 UTC, after the hackathon opened, so the whole history is the hackathon diff. The tag `hackathon-submission` marks the commit we submitted. No starter template was used. This is our only NEAR HACKATHON entry; CHOK on Solana, described above, is the one other project behind it, and it is not part of this entry.
+
 ## Running it yourself
 
 You need Node 20 and rustup. `rust-toolchain.toml` pins Rust 1.93.0 and both wasm targets, and rustup installs them for you. `npm run build` deletes any old build, builds from clean and remaps paths, so you get the same bytes as the chain whatever your home directory is, and `git status` stays clean. We checked that by building a fresh copy under a different `HOME`. Another compiler would give different bytes, and verify would say so.
