@@ -76,6 +76,7 @@
   .chk { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 9px 0; border-top: 1px solid var(--rule); font-size: .92rem; }
   .tick { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: .8rem; background: var(--rule); color: var(--muted); margin-top: 2px; }
   .tick.ok { background: var(--kept); color: #06210f; } .tick.no { background: var(--siren); color: #fff; }
+  .live-stats { margin: 10px 0 0; font-size: .95rem; color: var(--muted); max-width: 46rem; } .live-stats b { color: var(--ink); font-family: "Lilita One", sans-serif; font-weight: 400; font-size: 1.15em; }
   .console { display: flex; flex-direction: column; min-height: 520px; }
   .agent-head { display: flex; align-items: center; gap: 12px; }
   .mascot { width: 92px; height: 92px; flex: none; border-radius: 22px; background: var(--sunk); border: 2.5px solid var(--rule); overflow: hidden; display: grid; place-items: center; }
@@ -201,6 +202,7 @@
   <p class="lede">Get a plan with 20 million tokens inside and an agent you can give orders to. Ask for everything. Tell it to steal or change the rules. Hunt for the hidden limit. Every release request is a real transaction on NEAR testnet, and every bad one gets stamped <b>Busted</b> and makes the limit smaller.</p>
   <div style="display:flex;gap:12px;flex-wrap:wrap"><button class="btn" id="get-plan">Get a plan</button><a class="btn ghost" href="#launch">Launch a coin</a></div>
   <p class="muted" style="margin-top:14px;font-size:.95rem">No wallet, no NEAR, no sign up. We pay the testnet fees.</p>
+  <p class="live-stats" id="live-stats" aria-live="polite"></p>
 </div></header>
 
 <section id="play"><div class="wrap">
@@ -595,10 +597,19 @@ async function checkJudge() {
   $('t-judge').textContent = ok ? '✓' : '✗'; $('t-judge').className = `tick ${ok ? 'ok' : 'no'}`; $('v-hash').textContent = hex;
 }
 
+// the contract's own totals, read from the chain: every plan anyone has made, and what happened to them
+async function liveStats() {
+  let plans = [], from = 0;
+  for (let i = 0; i < 20; i++) { const page = await view('list_plans', { from, limit: 100 }); plans = plans.concat(page); if (page.length < 100) break; from = page[page.length - 1][0] + 1; }
+  const sum = (k) => plans.reduce((a, [, p]) => a + Number(p[k] || 0), 0);
+  const n = (x) => x.toLocaleString('en-US');
+  $('live-stats').innerHTML = `On the plan contract right now: <b>${n(plans.length)}</b> plans, <b>${n(sum('busted'))}</b> times Busted, <b>${n(sum('releases'))}</b> releases cleared. Every one is a real transaction, read from the chain as this page loaded.`;
+}
 async function main() {
   try { info = await (await fetch(API + '/near/info')).json(); } catch { say('<span class="err">The playground server is not answering right now.</span>', 'sys'); return; }
   $('f-plan').textContent = info.plan; $('f-agent').textContent = info.agent;
   $('brain-tag').textContent = info.brain?.live ? 'AI agent in a TEE' : info.brain?.model ? 'AI agent, waking up' : 'rule parser for now';
+  liveStats().catch(() => {});
   showPlan(); loadCoins(); verifiedPanel().catch(() => { $('vf-sum').textContent = 'Could not finish the checks just now.'; });
   try {
     // the hash and the commitment come from the plan on chain, not from our server
