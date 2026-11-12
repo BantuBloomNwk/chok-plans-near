@@ -6,7 +6,7 @@ CHOK is a launchpad where that can't happen quietly. Every coin launches with a 
 
 Everything else works like a launchpad should. Anyone can launch a coin, and anyone can buy it and sell it on a bonding curve, with a live chart and a trade tape that come straight from the chain. The difference is that the dev's own sells show up on that tape, marked, and only ever in amounts the plan allowed.
 
-This repo is CHOK on NEAR testnet. The live demo is at **https://chok-plans-near.netlify.app**.
+This repo is CHOK on NEAR testnet. The live demo is at **https://near.getchokd.com** (also https://chok-plans-near.netlify.app).
 
 ## Check it in 60 seconds
 
