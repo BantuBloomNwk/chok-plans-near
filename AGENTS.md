@@ -37,6 +37,7 @@ Each row below is a claim from the README, the code that makes it true, the test
 | The agent's only key can call `request_release` on the plan contract and nothing else | `scripts/new-agent.mjs` | | verify 3 (the key's receiver and method list) |
 | A prompt-injected model forced to pay an attacker is stopped by its key | `agent/brain.mjs` (tools), `server/demo.mjs` | `scripts/attack.mjs` | attack #32: the model's real `send_tokens` call to `attacker.testnet`, signed by its TEE, refused with `ReceiverMismatch` |
 | It can't attach a deposit or call another method | | | attack #2 `MethodNameMismatch`, attack #3 `DepositWithFunctionCall` |
+| Your own agent, over MCP, gets the same one key and can only ask | `mcp/server.mjs` (refuses to start with any other key), `mcp/setup.mjs` | | `chok_send_tokens` refused with `ReceiverMismatch`; over-cap `chok_request_release` Busted |
 | If the model is down or fails attestation, a plain rule parser runs and the answer says so | `agent/brain.mjs` | | the page's *Under the hood* panel |
 
 ## Sealed rules stay sealed, and are proven
