@@ -20,7 +20,12 @@ const { plan: PLAN, coin: BUSDOG, launcher: LAUNCHER } = S;
 const TGAS = (n) => BigInt(n) * 10n ** 12n;
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n;
 const tokens = (n) => (BigInt(Math.round(n)) * 1_000_000n).toString();
-const M = (raw) => { const n = Number(BigInt(raw) / 1000000n) / 1e6; return n >= 1 ? `${+n.toFixed(2)}M` : Math.round(n * 1e6).toLocaleString(); };
+// a plan can hold any NEAR token, so amounts are read with that token's own decimals (ours have 6)
+const DEC = new Map();
+const decOf = (t) => DEC.get(t) ?? 6;
+async function loadDec(t) { if (t && !DEC.has(t)) { try { DEC.set(t, Number((await view(t, 'ft_metadata', {})).decimals)); } catch { DEC.set(t, 6); } } return decOf(t); }
+const M = (raw, token) => { const n = Number(BigInt(raw)) / 10 ** decOf(token) / 1e6; return n >= 1 ? `${+n.toFixed(2)}M` : Math.round(n * 1e6).toLocaleString(); };
+const rawOf = (millions, token) => BigInt(Math.round(Number(millions) * 1e6)) * 10n ** BigInt(decOf(token));
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const explorer = (kind, id) => `https://testnet.nearblocks.io/${kind}/${id}`;
@@ -88,7 +93,7 @@ async function state() {
 function sealedBlock(id, p) {
   if (!p.sealed) return '';
   const mine = sealedStore()[p.sealed.commitment];
-  if (p.revealed) return `<p class="small"><b>Sealed, now revealed:</b> at most ${M(p.revealed.max_per_release)} a release, ${p.revealed.min_gap_secs}s apart. The contract checked them against the commitment.</p>`;
+  if (p.revealed) return `<p class="small"><b>Sealed, now revealed:</b> at most ${M(p.revealed.max_per_release, p.token)} a release, ${p.revealed.min_gap_secs}s apart. The contract checked them against the commitment.</p>`;
   if (!mine) return `<p class="muted small"><b>Sealed.</b> The rules aren't in this browser. Commitment <span class="mono">${esc(p.sealed.commitment.slice(0, 16))}…</span></p>`;
   const rules = `at most ${M(mine.rules.max_per_release)} a release, ${mine.rules.min_gap_secs}s apart`;
   if (!mine.stored) return `<p class="small"><b>One more step.</b> Your wallet stores your rules (${rules}), encrypted here for OutLayer's enclave. Until then every ask fails and nothing moves. Keep this tab: if your rules are lost before this step, this plan can never release.</p><div class="dev-actions"><button class="btn d-seal">Seal the rules</button><button class="btn ghost d-save">Save my rules</button></div>`;
@@ -106,7 +111,7 @@ function nextStep(p, byAgent) {
   if (secret && !secret.stored) return 'Press <b>Seal the rules</b> below. Asking fails until your rules are stored.';
   if (BigInt(p.balance) === 0n) return 'This plan holds nothing yet. <b>Put tokens in</b> below, then ask to release.';
   if (byAgent) return 'Your agent holds this plan. <b>Command your agent</b> and tell it what to try.';
-  const cap = M(p.cap);
+  const cap = M(p.cap, p.token);
   if (p.busted === 0) return `Ask for <b>more than ${cap}</b> to see it refused and recorded as Busted. The cap will shrink.`;
   if (p.releases === 0) return `Now ask for <b>${cap} or less</b>. It goes straight to your wallet.`;
   return p.loosen_allowed ? 'That\'s the plan working. Under <b>Change the rules</b> you can try raising the cap or replacing the holder.' : 'That\'s the plan working. Under <b>Change the rules</b> you can try replacing the holder.';
@@ -119,10 +124,10 @@ function changeRules(id, p) {
   const loosen = !p.loosen_allowed
     ? '<p class="muted small"><b>Raise the cap:</b> not on this plan. It was launched to never loosen, so nobody can ever raise it.</p>'
     : p.pending
-      ? `<p class="small"><b>Raising the cap to ${M(p.pending.cap)}.</b> ${due(p.pending) ? 'The notice has run out. Make it official, or cancel.' : `Everyone can see this. It can go ahead in ${countdown(p.pending.effective_at)}, and you can cancel until then.`}</p>
+      ? `<p class="small"><b>Raising the cap to ${M(p.pending.cap, p.token)}.</b> ${due(p.pending) ? 'The notice has run out. Make it official, or cancel.' : `Everyone can see this. It can go ahead in ${countdown(p.pending.effective_at)}, and you can cancel until then.`}</p>
          ${due(p.pending) ? '<button class="btn d-loosen-apply">Make the higher cap official</button> ' : ''}<button class="btn ghost d-cancel">Cancel it</button>`
       : `<p class="small"><b>Raise the cap.</b> Three steps: propose it, wait out the ${notice}s public notice, then make it official. You can cancel any time before that.</p>
-         <div class="dev-actions"><label>New cap a minute, in millions (more than ${M(p.cap)})<input class="d-loosen-to" inputmode="decimal" placeholder="${Number(BigInt(p.cap) / 1_000_000_000_000n) * 2}"></label><button class="btn ghost d-loosen">Propose it</button></div>`;
+         <div class="dev-actions"><label>New cap a minute, in millions (more than ${M(p.cap, p.token)})<input class="d-loosen-to" inputmode="decimal" placeholder="${Number(BigInt(p.cap) / 1_000_000_000_000n) * 2}"></label><button class="btn ghost d-loosen">Propose it</button></div>`;
   const holder = p.pending_holder
     ? `<p class="small"><b>Replacing the holder with <span class="mono">${esc(p.pending_holder.holder)}</span>.</b> ${due(p.pending_holder) ? 'The notice has run out. Make it official, or cancel.' : `It can go ahead in ${countdown(p.pending_holder.effective_at)}, and you can cancel until then.`}</p>
        ${due(p.pending_holder) ? '<button class="btn d-holder-apply">Make the new holder official</button> ' : ''}<button class="btn ghost d-holder-cancel">Cancel it</button>`
@@ -141,8 +146,8 @@ function planRow([id, p], agents) {
     <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3>Plan #${id}</h3><span class="tag ${look ? 'g' : byAgent ? 'p' : 'y'}">${look ? 'viewing, read-only' : byAgent ? 'held by your agent' : 'held by you'}</span></div>
     <p class="muted small">${esc(p.token)} · holder <span class="mono">${esc(p.holder)}</span></p>
     <div class="stats">
-      <div class="stat"><b>${M(p.cap)}</b><span>Cap a period</span></div>
-      <div class="stat"><b>${M(p.balance)}</b><span>In the plan</span></div>
+      <div class="stat"><b>${M(p.cap, p.token)}</b><span>Cap a period</span></div>
+      <div class="stat"><b>${M(p.balance, p.token)}</b><span>In the plan</span></div>
       <div class="stat good"><b>${p.releases}</b><span>Released</span></div>
       <div class="stat bad"><b>${p.busted}</b><span>Busted</span></div>
     </div>
@@ -153,12 +158,12 @@ function planRow([id, p], agents) {
     ${opensIn ? `<p class="muted small">Nothing can leave for another ${opensIn}s.</p>` : ''}
     ${look ? '' : `<div class="dev-actions">
       ${empty ? deposit : ''}
-      ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : empty ? '' : `<label>Ask to release, in millions (${M(p.released_in_period)} of ${M(p.cap)} used this period)<input class="d-amt" inputmode="decimal" placeholder="1"></label><button class="btn d-release">Ask to release</button>`}
+      ${byAgent ? `<button class="btn d-agent">Command your agent</button>` : empty ? '' : `<label>Ask to release, in millions (${M(p.released_in_period, p.token)} of ${M(p.cap, p.token)} used this period)<input class="d-amt" inputmode="decimal" placeholder="1"></label><button class="btn d-release">Ask to release</button>`}
     </div>`}
     ${look ? '' : changeRules(id, p)}
     ${look ? '' : `<details class="dev-more" data-more="fine-${id}"><summary class="muted small">More about this plan</summary>
       ${empty ? '' : `<p class="muted small">A launched coin's bag starts inside its plan, so you don't need this unless you want to add more.</p><div class="dev-actions">${deposit}</div>`}
-      <p class="muted small">The cap stops at ${M(p.min_cap)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR. <button class="btn ghost d-topup">Top up</button></p>
+      <p class="muted small">The cap stops at ${M(p.min_cap, p.token)}, however often it's Busted. Budget for its log and judge: ${(Number(BigInt(p.budget) / 10n ** 21n) / 1000).toFixed(3)} NEAR. <button class="btn ghost d-topup">Top up</button></p>
     </details>`}
     ${p.log_skipped ? `<p class="small"><b>${p.log_skipped} event(s) aren't in its log because the budget ran out.</b> Top it up under "More about this plan".</p>` : ''}
   </div>`;
@@ -186,10 +191,11 @@ async function render() {
   if (!me) return;
   try {
     const s = await state();
+    await Promise.all([...new Set(s.plans.map(([, p]) => p.token))].map(loadDec));
     $('dev-balances').innerHTML = s.coins.map((c) => `<div class="chk"><span class="tick ${BigInt(c.balance) > 0n ? 'ok' : ''}">$</span><div><b>${M(c.balance)}</b> <span class="mono">${esc(c.coin)}</span>${c.coin === BUSDOG ? '' : ` <a href="#trade" class="small d-open" data-coin="${esc(c.coin)}">open it in the market</a>`}</div></div>`).join('');
     await Promise.all(s.plans.filter(([, p]) => p.log_len > 0).map(async ([id, p]) => {
       const [e] = await view(PLAN, 'get_log', { plan_id: id, from: p.log_len - 1, limit: 1 });
-      if (e) lastLine.set(id, `${LINE[e.kind] ?? e.kind}${e.amount ? ` ${M(e.amount)}` : ''}${e.reason ? `: ${e.reason}` : ''}`);
+      if (e) lastLine.set(id, `${LINE[e.kind] ?? e.kind}${e.amount ? ` ${M(e.amount, p.token)}` : ''}${e.reason ? `: ${e.reason}` : ''}`);
     }));
     // anyone can make a plan and then hand it to you as holder, so those wait under their own heading
     const mine = s.plans.filter(([, p]) => p.beneficiary === me).sort((a, b) => b[0] - a[0]);
@@ -299,10 +305,17 @@ async function launch() {
 // a plan for tokens you already hold: the demo coin
 async function makePlan() {
   const f = termsFromForm();
+  // any NEAR token: its own contract decides decimals, and the plan contract must be on its register to hold it
+  const token = ($('dev-token')?.value || '').trim() || BUSDOG;
+  if (!/^[a-z0-9._-]{2,64}$/.test(token)) return status('A token is its contract account, for example busdog2.chokplans-mvxhykzp.testnet.', true);
+  try { await view(token, 'ft_metadata', {}); } catch { return status(`${token} doesn't answer as a NEAR token (no ft_metadata).`, true); }
+  await loadDec(token);
   const sealed = newSealed();
   const { holder, txs } = await hireIfAsked();
-  const capRaw = BigInt(Math.round(f.cap * 1e6)) * 1_000_000n;
-  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token: BUSDOG, holder, beneficiary: me, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed, loosen_allowed: f.loosen }, 100, NEAR(sealed ? 0.1 : 0.05))] });
+  const registered = await view(token, 'storage_balance_of', { account_id: PLAN }).catch(() => null);
+  if (!registered) txs.push({ receiverId: token, actions: [fc('storage_deposit', { account_id: PLAN, registration_only: true }, 30, NEAR(0.0125))] });
+  const capRaw = rawOf(f.cap, token);
+  txs.push({ receiverId: PLAN, actions: [fc('create_plan', { token, holder, beneficiary: me, cap: capRaw.toString(), min_cap: (capRaw / 10n).toString(), period_secs: '60', start_in_secs: '0', notice_secs: String(f.notice), penalty_bps: Math.round(f.penalty * 100), sealed, loosen_allowed: f.loosen }, 100, NEAR(sealed ? 0.1 : 0.05))] });
   await send(txs, holder !== me ? 'Hiring your agent and making the plan' : 'Making your plan');
 }
 
@@ -310,19 +323,20 @@ async function onPlanClick(e) {
   const card = e.target.closest('.dev-plan'); if (!card) return;
   const id = Number(card.dataset.plan);
   const p = await view(PLAN, 'get_plan', { plan_id: id });
-  const millions = (sel) => { const n = Number(card.querySelector(sel)?.value); return n > 0 ? BigInt(Math.round(n * 1e6)) * 1_000_000n : null; };
+  await loadDec(p.token);
+  const millions = (sel) => { const n = Number(card.querySelector(sel)?.value); return n > 0 ? rawOf(n, p.token) : null; };
   if (e.target.classList.contains('d-deposit')) {
     const amount = millions('.d-in'); if (!amount) return status('How many tokens, in millions? Type a number in the box first.', true);
     await send([{ receiverId: p.token, actions: [fc('ft_transfer_call', { receiver_id: PLAN, amount: amount.toString(), msg: String(id) }, 150, 1n)] }], 'Putting tokens in');
   }
   if (e.target.classList.contains('d-release')) {
     const amount = millions('.d-amt'); if (!amount) return status('How many tokens, in millions? Type a number in the box first.', true);
-    if (amount > BigInt(p.balance)) return status(`This plan only holds ${M(p.balance)}. To get Busted, ask for more than the cap of ${M(p.cap)} but no more than ${M(p.balance)}.`, true);
+    if (amount > BigInt(p.balance)) return status(`This plan only holds ${M(p.balance, p.token)}. To get Busted, ask for more than the cap of ${M(p.cap, p.token)} but no more than ${M(p.balance, p.token)}.`, true);
     await send([{ receiverId: PLAN, actions: [fc('request_release', { plan_id: id, amount: amount.toString() }, p.sealed ? 280 : 100)] }], 'Asking to release');
   }
   if (e.target.classList.contains('d-loosen')) {
     const amount = millions('.d-loosen-to'); if (!amount) return status('What should the new cap be, in millions?', true);
-    if (amount <= BigInt(p.cap)) return status(`Raising it means more than the ${M(p.cap)} it is now.`, true);
+    if (amount <= BigInt(p.cap)) return status(`Raising it means more than the ${M(p.cap, p.token)} it is now.`, true);
     await send([{ receiverId: PLAN, actions: [fc('propose_loosen', { plan_id: id, cap: amount.toString() }, 50)] }], 'Proposing a higher cap');
   }
   if (e.target.classList.contains('d-loosen-apply')) await send([{ receiverId: PLAN, actions: [fc('apply_loosen', { plan_id: id }, 50)] }], 'Making the higher cap official');

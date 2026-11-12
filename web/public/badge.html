@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CHOK plan badge</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Lilita+One&display=swap" rel="stylesheet">
+<style>
+  /* A plan's live state, small enough to sit on any coin's own site. Read from the chain each time it
+     loads, never from our server. Embed: <iframe src=".../badge.html?plan=24" width="380" height="132"> */
+  :root { --bg: #150e0d; --sunk: #0f0909; --ink: #f8eedb; --muted: #b9a990; --rule: #3b2b28; --danfo: #f2c230; --siren: #ec4b3b; --kept: #3fbf86; color-scheme: dark; }
+  :root[data-theme="light"] { --bg: #fffaf0; --sunk: #eadbbf; --ink: #2a1405; --muted: #6b5640; --rule: #d6c09b; --siren: #c9372a; --kept: #1d8a58; color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 600 14px/1.35 "Baloo 2", system-ui, sans-serif; }
+  a.badge { display: block; color: inherit; text-decoration: none; border: 2.5px solid var(--rule); border-radius: 16px; padding: 12px 14px; height: 128px; overflow: hidden; }
+  a.badge:hover { border-color: var(--danfo); }
+  .top { display: flex; align-items: center; gap: 8px; }
+  .logo { font: 400 1rem "Lilita One", sans-serif; background: var(--danfo); color: #1d1206; border-radius: 6px; padding: 0 6px; }
+  .who { font: 400 1.05rem "Lilita One", sans-serif; }
+  .lock { margin-left: auto; font-size: .72rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--kept); }
+  .lock.loose { color: var(--siren); }
+  .row { display: flex; gap: 16px; margin-top: 8px; }
+  .row b { display: block; font: 400 1.35rem/1.1 "Lilita One", sans-serif; }
+  .row span { font-size: .7rem; color: var(--muted); }
+  .bust b { color: var(--siren); }
+  .foot { margin-top: 6px; font-size: .72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<a class="badge" id="b" target="_blank" rel="noopener" href="https://chok-plans-near.netlify.app/"><div class="top"><span class="logo">C</span><span class="who">Reading the plan…</span></div></a>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search), id = Number(q.get('plan')), b = document.getElementById('b');
+  if (q.get('theme') === 'light') document.documentElement.dataset.theme = 'light';
+  const PLAN = q.get('contract') || 'planbook.chokplans-mvxhykzp.testnet';
+  const RPCS = ['https://test.rpc.fastnear.com', 'https://rpc.testnet.fastnear.com', 'https://near-testnet.drpc.org'];
+  const view = async (account, method, args) => {
+    for (const url of RPCS) {
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'query', params: { request_type: 'call_function', finality: 'optimistic', account_id: account, method_name: method, args_base64: btoa(JSON.stringify(args)) } }) });
+        const j = await r.json(); if (j.result) return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
+      } catch { /* next one */ }
+    }
+    throw new Error('no answer');
+  };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  if (!Number.isInteger(id) || id < 0) { b.innerHTML = '<div class="top"><span class="logo">C</span><span class="who">Add ?plan=&lt;id&gt; to show a plan</span></div>'; return; }
+  try {
+    const p = await view(PLAN, 'get_plan', { plan_id: id });
+    if (!p) throw new Error('no such plan');
+    const meta = await view(p.token, 'ft_metadata', {}).catch(() => ({ symbol: p.token.split('.')[0], decimals: 6 }));
+    const amt = (raw) => { const n = Number(BigInt(raw)) / 10 ** meta.decimals; return n >= 1e6 ? `${+(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${+(n / 1e3).toFixed(1)}K` : `${+n.toFixed(4)}`; };
+    const period = Number(p.period_ns) / 1e9, per = period === 60 ? 'minute' : period === 3600 ? 'hour' : period === 86400 ? 'day' : period % 3600 === 0 ? `${period / 3600} hours` : period % 60 === 0 ? `${period / 60} minutes` : `${period} s`;
+    b.href = `https://chok-plans-near.netlify.app/?as=${encodeURIComponent(p.beneficiary)}`;
+    b.innerHTML = `<div class="top"><span class="logo">C</span><span class="who">$${esc(meta.symbol)} dev's bag</span><span class="lock${p.loosen_allowed === false ? '' : ' loose'}">${p.loosen_allowed === false ? 'Never loosens' : 'Can loosen'}</span></div>
+      <div class="row"><div><b>${amt(p.balance)}</b><span>in the plan</span></div><div><b>${amt(p.cap)}</b><span>most per ${per}</span></div><div class="bust"><b>${p.busted}</b><span>${p.busted === 1 ? "time" : "times"} Busted</span></div><div><b>${amt(p.released_total)}</b><span>released</span></div></div>
+      <div class="foot">Plan #${id} on NEAR testnet, read from the chain just now · CHOK plans</div>`;
+  } catch (e) { b.innerHTML = `<div class="top"><span class="logo">C</span><span class="who">Couldn't read plan #${id}</span></div><div class="foot">${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>
