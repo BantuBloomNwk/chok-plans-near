@@ -61,7 +61,7 @@
   @media (min-width: 900px) { .hero-body { grid-template-columns: minmax(0, 1fr) 360px; } }
   .hero-cast { margin: 0; display: none; text-align: center; }
   @media (min-width: 900px) { .hero-cast { display: block; } }
-  .cast-stage { width: 360px; height: 360px; margin: 0 auto; border-radius: 28px; background: color-mix(in oklab, var(--card) 22%, transparent); position: relative; z-index: 1; overflow: hidden; }
+  .cast-stage { width: 360px; height: 360px; margin: 0 auto; position: relative; z-index: 1; }
   .hero-cast figcaption { margin-top: 10px; min-height: 2.8em; font-size: .92rem; color: var(--muted); }
   .hero p.lede { font-size: 1.2rem; max-width: 44rem; margin: 0 0 22px; }
   .rain { position: absolute; inset: 0; pointer-events: none; z-index: -1; }
@@ -185,7 +185,7 @@
   .dev-actions .d-agent, .dev-actions .d-loosen, .dev-actions .d-cancel { grid-column: 1 / -1; justify-content: center; }
   .reveal-box { margin-top: 10px; padding: 12px; border-radius: 14px; background: var(--sunk); border: 2px dashed var(--sealed); display: none; }
   .reveal-box.on { display: block; animation: rise .3s both; }
-  footer .powered { display: flex; align-items: center; gap: 6px; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 800; }
+  footer .powered { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 800; }
   footer .powered a { color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; }
   footer { padding: 30px 0 60px; color: var(--muted); font-size: .9rem; border-top: 1px solid var(--rule); margin-top: 20px; }
   .err { color: var(--siren); font-weight: 700; }
