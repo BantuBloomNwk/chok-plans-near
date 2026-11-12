@@ -14,6 +14,8 @@
 //    released tokens have come back into it
 // 8. every transaction in attack-log.md ended the way the log says
 // 9. with a NEAR AI key, the model the agent thinks with passes a fresh TEE attestation
+// 10. if mainnet.json exists: the mainnet plan contract and coin have no keys, run this same build, and the
+//     mainnet plan was Busted
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -175,6 +177,23 @@ if (logFile) {
   check(wrong.length === 0, `every transaction in the attack log ended the way the log says (${ok} checked)`, wrong.length ? `steps that don't match: ${wrong.join(', ')}` : '');
   if (unread.length) skip(`attack log steps ${unread.join(', ')}`, 'the RPCs are busy and would not answer, so these were not checked. Run it again in a minute.');
 } else skip('the attack log', 'run node scripts/attack.mjs first');
+
+// 8: mainnet, if this repo has been deployed there (mainnet.json)
+const MN = (() => { try { return JSON.parse(fs.readFileSync(new URL('../mainnet.json', import.meta.url))); } catch { return null; } })();
+if (MN) {
+  console.log('');
+  const mrpc = new providers.FailoverRpcProvider(['https://free.rpc.fastnear.com', 'https://rpc.mainnet.fastnear.com'].map((url) => new providers.JsonRpcProvider({ url }, { retries: 4, backoff: 2, wait: 800 })));
+  for (const [what, id, wasmName] of [['mainnet plan contract', MN.plan, 'plan'], ['mainnet coin', MN.coin, 'token']]) {
+    const ks = (await mrpc.query({ request_type: 'view_access_key_list', finality: 'final', account_id: id })).keys;
+    check(ks.length === 0, `the ${what} has no access keys`, `${ks.length} keys on ${id}`);
+    const acc = await mrpc.query({ request_type: 'view_account', finality: 'final', account_id: id });
+    const w = local(`target/wasm32-unknown-unknown/release/${wasmName}.wasm`);
+    if (w) check(acc.code_hash === hashOf(w), `the ${what}'s code is this repo's build, the same bytes as on testnet`, `on chain ${acc.code_hash}, local ${hashOf(w)}`);
+  }
+  const r = await mrpc.query({ request_type: 'call_function', finality: 'final', account_id: MN.plan, method_name: 'get_plan', args_base64: Buffer.from(JSON.stringify({ plan_id: MN.planId })).toString('base64') });
+  const mp = JSON.parse(Buffer.from(r.result).toString());
+  check(BigInt(mp.cap) < 10_000_000_000_000n, `mainnet plan #${MN.planId} was Busted and its cap tightened`, `cap now ${Number(mp.cap) / 1e12}M`);
+} else skip('mainnet', 'not deployed there from this checkout (no mainnet.json)');
 
 // 7: the model
 const aiKey = process.env.NEAR_AI_KEY || (() => { try { return fs.readFileSync(path.join(os.homedir(), '.near-ai-key'), 'utf8').trim(); } catch { return ''; } })();

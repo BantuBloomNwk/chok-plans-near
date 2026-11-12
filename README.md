@@ -115,6 +115,17 @@ Each coin gets a bonding curve in `contracts/market`: a constant-product curve o
 
 **Privacy.** Two kinds of secrets stay secret while still giving public answers. The dev's selling rules are judged inside an OutLayer enclave and proven against a commitment, and a dev can seal their own from their machine or wallet so that we never see them. The agent's model runs in a NEAR AI TEE, and the page shows the attestation and signature checks on every answer. The server keeps no prompts and no replies after it answers. The only record it keeps is the plan log: what was asked, what the chain said, and the transaction.
 
+**Who sees what.** CHOK is a transparency product: what a dev can do with their bag is public on purpose. Privacy covers the two things that should stay private, the dev's selling rules until they're revealed, and what you say to the agent.
+
+| | Anyone reading the chain | Our playground server | OutLayer's enclave | NEAR AI Cloud | You |
+| --- | --- | --- | --- | --- | --- |
+| A plan's public terms: cap, floor, holder, notice | Yes | Yes | n/a | No | Yes |
+| Sealed rules on a quick-try plan | Only the commitment, until reveal | Yes, it made them (that's why reveal is a button there) | Inside the enclave only | No | After reveal |
+| Sealed rules you seal yourself under "Be the dev" | Only the commitment, until reveal | **No** | Inside the enclave only | No | Yes |
+| What you tell the agent | No | Passes through, not kept after the answer (the plan log keeps only what was asked of the chain) | No | Inside its TEE, attested on every answer | Yes |
+| What the agent tried, and every verdict | Yes, as transactions and the plan log | Yes | The verdicts it gave | No | Yes |
+| Releases, Busted, trades and the dev's own sells | Yes, on purpose | Yes | No | No | Yes |
+
 **Memecoins.** The mechanic lives in contracts, not in our backend. Every parameter is set at launch and readable on chain, and none of the contracts that matter has ever had a key that could change it: not the launcher, not any coin, not the plan, not the market. The launcher binds every coin to its plan in the transaction that makes it, and the coin's headline says whether that plan can ever be loosened. The page shows each plan's state and its log of every release and Busted from the chain, the mints are NEP-141 events, and sells from the dev's own account are marked on the chart and the tape. A dev who sends released tokens to a second account first sells unmarked: nothing here can stop that.
 
 **Open.** The rules are in a readable contract. The beneficiary can cancel a pending loosening until its notice runs out. The demo's timers are in minutes and seconds, so you can watch them run out.
@@ -188,7 +199,7 @@ node scripts/seal-plan.mjs --account you.testnet           # your own sealed pla
 - **Scripts and the playground:** near-api-js 5.1.1, FastNEAR's testnet RPC, NEAR AI Cloud, `@phala/dcap-qvl` (Intel quote checks), `ethers` (signature recovery) and NVIDIA's attestation service.
 - **The page:** Vite, NEAR Wallet Selector 10 (Meteor, HERE, Intear) and [KLineChart](https://github.com/klinecharts/KLineChart) 10 (Apache-2.0) for the candles and axes. The trader bubbles, stamps and panels in `web/src/terminal` are ours.
 
-The code was written with an AI coding assistant, working to our design. Every decision about what the contracts allow, and every claim in this README, was made and checked by us. `npm run verify` is there so you don't have to take our word for any of it.
+The code was written with Claude Code, Anthropic's AI coding assistant, working to our design. Every decision about what the contracts allow, and every claim in this README, was made and checked by us. `npm run verify` is there so you don't have to take our word for any of it.
 
 ## License
 
