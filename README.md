@@ -8,6 +8,18 @@ Everything else works like a launchpad should. Anyone can launch a coin, and any
 
 This repo is CHOK on NEAR testnet. The live demo is at **https://chok-plans-near.netlify.app**.
 
+## Check it in 60 seconds
+
+The rules here live in NEAR contracts that have never had an access key, so nobody, us included, can change them, and nothing depends on a server or an enclave staying honest to enforce them. You don't have to trust that sentence:
+
+```bash
+npm install
+npm run judge -- --quick     # every README claim against testnet, no keys, about a minute
+npm run judge                # the same, plus a clean build whose code hashes must equal the ones on chain
+```
+
+[`AGENTS.md`](AGENTS.md) maps every claim to its code, its test and what to read on chain. [`attack-log.md`](attack-log.md) is 27 attacks on the live contracts, every one refused for the reason expected, with the transactions.
+
 ## Try it in five minutes
 
 No wallet needed for steps 1 to 5.

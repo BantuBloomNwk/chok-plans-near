@@ -16,7 +16,8 @@
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0",
     "buffer": "^6.0.3",
-    "klinecharts": "10.1.0"
+    "klinecharts": "10.1.0",
+    "three": "0.180.0"
   },
   "devDependencies": {
     "vite": "6.0.7"

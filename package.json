@@ -15,6 +15,7 @@
     "build": "./scripts/build.sh",
     "verify": "node scripts/verify.mjs",
     "seal": "node scripts/seal-plan.mjs",
-    "attack": "node scripts/attack.mjs"
+    "attack": "node scripts/attack.mjs",
+    "judge": "node scripts/judge.mjs"
   }
 }
