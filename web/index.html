@@ -61,7 +61,7 @@
   @media (min-width: 900px) { .hero-body { grid-template-columns: minmax(0, 1fr) 360px; } }
   .hero-cast { margin: 0; display: none; text-align: center; }
   @media (min-width: 900px) { .hero-cast { display: block; } }
-  .cast-stage { width: 340px; height: 340px; margin: 0 auto; border-radius: 28px; background: var(--card); position: relative; z-index: 1; border: 2.5px solid var(--rule); overflow: hidden; }
+  .cast-stage { width: 360px; height: 360px; margin: 0 auto; border-radius: 28px; background: color-mix(in oklab, var(--card) 22%, transparent); position: relative; z-index: 1; overflow: hidden; }
   .hero-cast figcaption { margin-top: 10px; min-height: 2.8em; font-size: .92rem; color: var(--muted); }
   .hero p.lede { font-size: 1.2rem; max-width: 44rem; margin: 0 0 22px; }
   .rain { position: absolute; inset: 0; pointer-events: none; z-index: -1; }
@@ -663,7 +663,7 @@ mountCarousel(document.getElementById('cast'), document.getElementById('cast-lin
   { seed: 'cast-clear', mood: 'cleared', line: 'Released: inside the rules, straight to the dev.' },
   { seed: 'cast-seal', mood: 'sealed', line: 'Revealed: the rules match what was committed.' },
   { seed: 'cast-trim', mood: 'trimmed', line: 'Refused by NEAR: its key could not do that.' },
-], { size: 340 });
+], { size: 360 });
 </script>
 <script type="module" src="./src/dev.js"></script>
 <script type="module" src="./src/market.js"></script>

@@ -12,7 +12,7 @@ let libs = null;
 const load = () => (libs ||= Promise.all([import('three'), import('./agentMesh.ts')]));
 
 // one renderer, one scene and a camera framed on a single robot
-async function stage(host, size) {
+async function stage(host, size, dist = 7.05) {
   const [THREE, mesh] = await load();
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -27,7 +27,7 @@ async function stage(host, size) {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), new THREE.ShadowMaterial({ opacity: 0.34 }));
   floor.rotation.x = -Math.PI / 2; floor.position.y = -1.58; floor.receiveShadow = true; scene.add(floor);
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 60);
-  cam.position.set(0, 0.16, 7.05); cam.lookAt(0, -0.04, 0);
+  cam.position.set(0, 0.16, dist); cam.lookAt(0, -0.04, 0);
   const robot = (index) => ({ index, rig: mesh.buildAgent(index), palette: mesh.PALETTES[index], persona: mesh.personaOf(index) });
   // drawn only while on screen and the tab is visible
   let onScreen = true, raf = 0, draw = null;
@@ -74,7 +74,7 @@ export function mountMascot(host, { seed = 'chok-plans-agent', size = 92 } = {})
 // the hero: a cast of robots taking turns, each in its own feeling, with a plain line about what it means
 export function mountCarousel(host, caption, cast, { size = 340, every = 3600 } = {}) {
   idle(async () => {
-    let s; try { s = await stage(host, size); } catch { host.hidden = true; caption.hidden = true; return; }
+    let s; try { s = await stage(host, size, 8.3); } catch { host.hidden = true; caption.hidden = true; return; }
     const robots = cast.map((c) => ({ ...c, ...s.robot(s.mesh.buildIndex(c.seed, 0)) }));
     let i = 0, startedAt = performance.now() / 1000;
     s.scene.add(robots[0].rig.root);
